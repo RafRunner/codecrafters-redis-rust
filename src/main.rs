@@ -1,8 +1,11 @@
-use std::{io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}};
+use std::{
+    io::{BufRead, BufReader, Write},
+    net::{TcpListener, TcpStream},
+};
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    
+
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -27,6 +30,9 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
     for line in buf.lines() {
         let line = line?;
         println!("line read: {}", &line);
+        if line.is_empty() {
+            break;
+        }
         lines.push(line);
     }
 
