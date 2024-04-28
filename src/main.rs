@@ -22,10 +22,15 @@ fn main() {
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
     let buf = BufReader::new(&mut stream);
+    let mut lines = Vec::new();
 
-    for line in buf.lines().collect::<Vec<_>>() {
+    for line in buf.lines() {
         let line = line?;
         println!("line read: {}", &line);
+        lines.push(line);
+    }
+
+    for _ in lines {
         stream.write_all("+PONG\r\n".as_bytes())?;
     }
 
