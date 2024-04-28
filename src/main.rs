@@ -29,7 +29,9 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
 
     let command = RedisType::parse(&mut buf).await?;
 
-    match command {
+    println!("Input command: {:?}", command);
+
+    let response = match command {
         RedisType::List { len, data } => {
             let vector = data;
 
@@ -41,43 +43,46 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
                         if let RedisType::BulkString { data, .. }
                         | RedisType::SimpleString { data, .. } = vector[1].as_ref()
                         {
-                            buf.get_mut()
-                                .write_all(&RedisCommand::ECHO(data.clone()).write_as_protocol())
-                                .await?;
-
-                            return Ok(());
+                            Some(RedisCommand::ECHO(data.clone()))
+                        } else {
+                            None
                         }
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            } else {
+                None
             }
         }
         RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => {
             if data.to_lowercase() == "ping" {
-                buf.get_mut()
-                    .write_all(&RedisCommand::PING.write_as_protocol())
-                    .await?;
-
-                return Ok(());
+                Some(RedisCommand::PING)
+            } else {
+                None
             }
         }
-        RedisType::SimpleError { .. } => {
+        RedisType::SimpleError { .. } => None,
+    };
+
+    match response {
+        Some(command) => {
+            println!("Writing response: {:?}", command);
+            buf.write_all(&command.write_as_protocol()).await?
+        }
+        None => {
+            println!("No response built");
             buf.write_all(
                 &RedisType::SimpleError {
-                    message: "Unsuported command".to_string(),
+                    message: "Unrecognized command".to_string(),
                 }
                 .write_as_protocol(),
             )
             .await?
         }
     };
-
-    buf.write_all(
-        &RedisType::SimpleError {
-            message: "Unrecognized command".to_string(),
-        }
-        .write_as_protocol(),
-    )
-    .await?;
 
     Ok(())
 }
