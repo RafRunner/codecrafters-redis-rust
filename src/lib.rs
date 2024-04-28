@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use async_recursion::async_recursion;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
@@ -27,18 +29,23 @@ impl RedisType {
     #[async_recursion]
     pub async fn parse(
         reader: &mut BufReader<impl AsyncRead + Unpin + Send>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<Option<Self>, anyhow::Error> {
         let mut command_char = [0; 1];
-        reader.read_exact(&mut command_char).await?;
+        if let Err(e) = reader.read_exact(&mut command_char).await {
+            if e.kind() == ErrorKind::UnexpectedEof {
+                return Ok(None); // No more data from client
+            }
+        }
 
-        Ok(match command_char[0] as char {
+        Ok(Some(match command_char[0] as char {
             '*' => {
                 let len = Self::read_len(reader).await?;
                 let mut elements = Vec::new();
 
                 for _ in 0..len {
-                    let element = Self::parse(reader).await?;
-                    elements.push(Box::new(element));
+                    if let Some(element) = Self::parse(reader).await? {
+                        elements.push(Box::new(element));
+                    }
                 }
 
                 Self::List {
@@ -67,10 +74,10 @@ impl RedisType {
                     data: line[0..line.len() - 2].to_string(),
                 }
             }
-            _char => {
-                todo!("Handle simples string command/errors")
-            }
-        })
+            character => Self::SimpleError {
+                message: format!("Unknow command {}", character),
+            },
+        }))
     }
 
     async fn read_len(
@@ -124,14 +131,10 @@ impl RedisCommand {
 
                 match len {
                     2 => {
-                        if let RedisType::BulkString { data, .. }
-                        | RedisType::SimpleString { data, .. } = vector[0].as_ref()
-                        {
+                        if let Some(data) = Self::extract_string(&vector[0]) {
                             if data.to_lowercase() == "echo" {
-                                if let RedisType::BulkString { data, .. }
-                                | RedisType::SimpleString { data, .. } = vector[1].as_ref()
-                                {
-                                    return Ok(Some(RedisCommand::ECHO(data.clone())));
+                                if let Some(data) = Self::extract_string(&vector[1]) {
+                                    return Ok(Some(RedisCommand::ECHO(data.to_string())));
                                 }
                             }
                         }
@@ -152,20 +155,25 @@ impl RedisCommand {
 
         Ok(None)
     }
-}
 
-impl RedisWritable for RedisCommand {
-    fn write_as_protocol(&self) -> Vec<u8> {
+    pub fn execute(&self) -> RedisType {
         match self {
             RedisCommand::PING => RedisType::SimpleString {
                 data: "PONG".to_string(),
-            }
-            .write_as_protocol(),
+            },
             RedisCommand::ECHO(payload) => RedisType::BulkString {
                 len: payload.len(),
                 data: payload.clone(),
+            },
+        }
+    }
+
+    fn extract_string(redis_type: &RedisType) -> Option<&str> {
+        match redis_type {
+            RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => {
+                Some(&data)
             }
-            .write_as_protocol(),
+            _ => None,
         }
     }
 }
@@ -184,7 +192,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(expected, parsed);
+        assert_eq!(Some(expected), parsed);
     }
 
     #[tokio::test]

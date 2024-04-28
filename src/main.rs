@@ -27,28 +27,31 @@ async fn main() {
 async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
     let mut buf = BufReader::new(&mut stream);
 
-    let command = RedisType::parse(&mut buf).await?;
+    while let Ok(Some(command)) = RedisType::parse(&mut buf).await {
+        println!("Input command: {:?}", command);
 
-    println!("Input command: {:?}", command);
+        let maybe_command = RedisCommand::parse(&command)?;
 
-    let response = RedisCommand::parse(&command)?;
+        match maybe_command {
+            Some(command) => {
+                println!("Executing command: {:?}", command);
+                let result = command.execute();
+                println!("Command result: {:?}", result);
 
-    match response {
-        Some(command) => {
-            println!("Writing response: {:?}", command);
-            buf.write_all(&command.write_as_protocol()).await?
+                buf.write_all(&result.write_as_protocol()).await?
+            }
+            None => {
+                println!("No response built");
+                buf.write_all(
+                    &RedisType::SimpleError {
+                        message: "Unrecognized command".to_string(),
+                    }
+                    .write_as_protocol(),
+                )
+                .await?
+            }
         }
-        None => {
-            println!("No response built");
-            buf.write_all(
-                &RedisType::SimpleError {
-                    message: "Unrecognized command".to_string(),
-                }
-                .write_as_protocol(),
-            )
-            .await?
-        }
-    };
+    }
 
     Ok(())
 }
