@@ -101,21 +101,11 @@ impl RedisWritable for RedisType {
 
                 bytes
             }
-            RedisType::BulkString { len, data } => format!("${}\r\n{}\r\n", len, data)
-                .as_bytes()
-                .into_iter()
-                .cloned()
-                .collect(),
-            RedisType::SimpleString { data } => format!("+{}\r\n", data)
-                .as_bytes()
-                .into_iter()
-                .cloned()
-                .collect(),
-            RedisType::SimpleError { message } => format!("-{}\r\n", message)
-                .as_bytes()
-                .into_iter()
-                .cloned()
-                .collect(),
+            RedisType::BulkString { len, data } => {
+                format!("${}\r\n{}\r\n", len, data).as_bytes().to_vec()
+            }
+            RedisType::SimpleString { data } => format!("+{}\r\n", data).as_bytes().to_vec(),
+            RedisType::SimpleError { message } => format!("-{}\r\n", message).as_bytes().to_vec(),
         }
     }
 }

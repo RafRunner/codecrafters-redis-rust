@@ -39,7 +39,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
                 if let RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } =
                     vector[0].as_ref()
                 {
-                    if data.to_lowercase() == "ECHO" {
+                    if data.to_lowercase() == "echo" {
                         if let RedisType::BulkString { data, .. }
                         | RedisType::SimpleString { data, .. } = vector[1].as_ref()
                         {
