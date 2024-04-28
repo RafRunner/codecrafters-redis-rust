@@ -1,40 +1,40 @@
-use std::{
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
-};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+#[tokio::main]
+async fn main() {
+    let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
                 println!("accepted new connection");
 
-                match handle_connection(stream) {
-                    Ok(()) => println!("connection handled successfully"),
-                    Err(e) => println!("error handling connection: {}", e),
-                }
+                // Spawn a new task for handling the connection
+                tokio::spawn(async {
+                    match handle_connection(stream).await {
+                        Ok(()) => println!("connection handled successfully"),
+                        Err(e) => println!("error handling connection: {}", e),
+                    }
+                });
             }
-            Err(e) => {
-                println!("error: {}", e);
-            }
+            Err(e) => println!("error accepting connection: {}", e),
         }
     }
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
+async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
     let mut buf = BufReader::new(&mut stream);
 
     let mut line = String::new();
-    while buf.read_line(&mut line)? > 0 {
+    while buf.read_line(&mut line).await? > 0 {
         if line.trim().is_empty() {
             break;
         }
         println!("line read: {}", line.trim_end());
 
         if line.contains("PING") {
-            buf.get_mut().write_all("+PONG\r\n".as_bytes())?;
+            buf.get_mut().write_all("+PONG\r\n".as_bytes()).await?;
         }
         line.clear(); // Clear the buffer for the next line
     }
