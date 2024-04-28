@@ -24,20 +24,16 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
-    let buf = BufReader::new(&mut stream);
-    let mut lines = Vec::new();
+    let mut buf = BufReader::new(&mut stream);
 
-    for line in buf.lines() {
-        let line = line?;
-        println!("line read: {}", &line);
-        if line.is_empty() {
+    let mut line = String::new();
+    while buf.read_line(&mut line)? > 0 {
+        if line.trim().is_empty() {
             break;
         }
-        lines.push(line);
-    }
-
-    for _ in lines {
-        stream.write_all("+PONG\r\n".as_bytes())?;
+        println!("line read: {}", line.trim_end());
+        buf.get_mut().write_all("+PONG\r\n".as_bytes())?;
+        line.clear(); // Clear the buffer for the next line
     }
 
     Ok(())
