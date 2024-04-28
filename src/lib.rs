@@ -110,10 +110,48 @@ impl RedisWritable for RedisType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RedisCommand {
     PING,
     ECHO(String),
+}
+
+impl RedisCommand {
+    pub fn parse(data: &RedisType) -> Result<Option<RedisCommand>, anyhow::Error> {
+        match data {
+            RedisType::List { len, data } => {
+                let vector = data;
+
+                match len {
+                    2 => {
+                        if let RedisType::BulkString { data, .. }
+                        | RedisType::SimpleString { data, .. } = vector[0].as_ref()
+                        {
+                            if data.to_lowercase() == "echo" {
+                                if let RedisType::BulkString { data, .. }
+                                | RedisType::SimpleString { data, .. } = vector[1].as_ref()
+                                {
+                                    return Ok(Some(RedisCommand::ECHO(data.clone())));
+                                }
+                            }
+                        }
+                    }
+                    1 => {
+                        return Self::parse(&vector[0]);
+                    }
+                    _ => (),
+                }
+            }
+            RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => {
+                if data.to_lowercase() == "ping" {
+                    return Ok(Some(RedisCommand::PING));
+                }
+            }
+            RedisType::SimpleError { .. } => (), // Do nothing
+        }
+
+        Ok(None)
+    }
 }
 
 impl RedisWritable for RedisCommand {
@@ -188,5 +226,76 @@ mod tests {
         };
 
         assert_type_equals(input, expected).await
+    }
+
+    #[test]
+    fn test_parse_ping() {
+        let data = RedisType::SimpleString {
+            data: "PING".to_string(),
+        };
+
+        let result = RedisCommand::parse(&data).unwrap();
+        assert_eq!(result, Some(RedisCommand::PING));
+
+        let data = RedisType::List {
+            len: 1,
+            data: vec![Box::new(RedisType::BulkString {
+                len: 4,
+                data: "Ping".to_string(),
+            })],
+        };
+
+        let result = RedisCommand::parse(&data).unwrap();
+        assert_eq!(result, Some(RedisCommand::PING));
+    }
+
+    #[test]
+    fn test_parse_echo() {
+        let data = RedisType::List {
+            len: 2,
+            data: vec![
+                Box::new(RedisType::BulkString {
+                    len: 4,
+                    data: "echo".to_string(),
+                }),
+                Box::new(RedisType::BulkString {
+                    len: 5,
+                    data: "hello".to_string(),
+                }),
+            ],
+        };
+
+        let result = RedisCommand::parse(&data).unwrap();
+        assert_eq!(result, Some(RedisCommand::ECHO("hello".to_string())));
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        let data = RedisType::List {
+            len: 2,
+            data: vec![
+                Box::new(RedisType::BulkString {
+                    len: 7,
+                    data: "invalid".to_string(),
+                }),
+                Box::new(RedisType::BulkString {
+                    len: 5,
+                    data: "world".to_string(),
+                }),
+            ],
+        };
+
+        let result = RedisCommand::parse(&data).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        let data = RedisType::SimpleString {
+            data: "".to_string(),
+        };
+
+        let result = RedisCommand::parse(&data).unwrap();
+        assert_eq!(result, None);
     }
 }

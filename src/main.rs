@@ -31,41 +31,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
 
     println!("Input command: {:?}", command);
 
-    let response = match command {
-        RedisType::List { len, data } => {
-            let vector = data;
-
-            if len == 2 {
-                if let RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } =
-                    vector[0].as_ref()
-                {
-                    if data.to_lowercase() == "echo" {
-                        if let RedisType::BulkString { data, .. }
-                        | RedisType::SimpleString { data, .. } = vector[1].as_ref()
-                        {
-                            Some(RedisCommand::ECHO(data.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => {
-            if data.to_lowercase() == "ping" {
-                Some(RedisCommand::PING)
-            } else {
-                None
-            }
-        }
-        RedisType::SimpleError { .. } => None,
-    };
+    let response = RedisCommand::parse(&command)?;
 
     match response {
         Some(command) => {
