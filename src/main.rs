@@ -32,7 +32,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
             break;
         }
         println!("line read: {}", line.trim_end());
-        buf.get_mut().write_all("+PONG\r\n".as_bytes())?;
+
+        if line.contains("PING") {
+            buf.get_mut().write_all("+PONG\r\n".as_bytes())?;
+        }
         line.clear(); // Clear the buffer for the next line
     }
 
