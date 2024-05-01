@@ -9,20 +9,10 @@ pub trait RedisWritable {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RedisType {
-    List {
-        len: usize,
-        data: Vec<Box<RedisType>>,
-    },
-    BulkString {
-        len: usize,
-        data: String,
-    },
-    SimpleString {
-        data: String,
-    },
-    SimpleError {
-        message: String,
-    },
+    List { data: Vec<Box<RedisType>> },
+    BulkString { data: String },
+    SimpleString { data: String },
+    SimpleError { message: String },
 }
 
 impl RedisType {
@@ -30,14 +20,17 @@ impl RedisType {
     pub async fn parse(
         reader: &mut BufReader<impl AsyncRead + Unpin + Send>,
     ) -> Result<Option<Self>, anyhow::Error> {
-        let mut command_char = [0; 1];
-        if let Err(e) = reader.read_exact(&mut command_char).await {
-            if e.kind() == ErrorKind::UnexpectedEof {
-                return Ok(None); // No more data from client
+        let command_char = match reader.read_u8().await {
+            Ok(byte) => Ok(byte as char),
+            Err(e) => {
+                if e.kind() == ErrorKind::UnexpectedEof {
+                    return Ok(None); // No more data from client
+                }
+                Err(e)
             }
-        }
+        }?;
 
-        Ok(Some(match command_char[0] as char {
+        Ok(Some(match command_char {
             '*' => {
                 let len = Self::read_len(reader).await?;
                 let mut elements = Vec::new();
@@ -48,30 +41,23 @@ impl RedisType {
                     }
                 }
 
-                Self::List {
-                    len,
-                    data: elements,
-                }
+                Self::List { data: elements }
             }
             '$' => {
                 let len = Self::read_len(reader).await?;
-                let mut buf = String::new();
+                let mut buffer = vec![0; len + 2]; // +2 for CRLF
+                reader.read_exact(&mut buffer).await?;
+                let data = String::from_utf8(buffer[..len].to_vec())?;
 
-                for _ in 0..len {
-                    let byte = reader.read_u8().await?;
-                    buf.push(byte as char);
-                }
-                let mut unwanted_space = Vec::new();
-                reader.read_until(b'\n', &mut unwanted_space).await?;
-
-                Self::BulkString { len, data: buf }
+                Self::BulkString { data }
             }
             '+' => {
                 let mut line = String::new();
                 reader.read_line(&mut line).await?;
+                line.truncate(line.len() - 2); // Removing CRLF
 
                 Self::SimpleString {
-                    data: line[0..line.len() - 2].to_string(),
+                    data: line,
                 }
             }
             character => Self::SimpleError {
@@ -95,10 +81,10 @@ impl RedisType {
 impl RedisWritable for RedisType {
     fn write_as_protocol(&self) -> Vec<u8> {
         match self {
-            RedisType::List { len, data } => {
+            RedisType::List { data } => {
                 let mut bytes = Vec::new();
 
-                for &byte in format!("*{}\r\n", len).as_bytes() {
+                for &byte in format!("*{}\r\n", data.len()).as_bytes() {
                     bytes.push(byte);
                 }
 
@@ -108,9 +94,9 @@ impl RedisWritable for RedisType {
 
                 bytes
             }
-            RedisType::BulkString { len, data } => {
-                format!("${}\r\n{}\r\n", len, data).as_bytes().to_vec()
-            }
+            RedisType::BulkString { data } => format!("${}\r\n{}\r\n", data.len(), data)
+                .as_bytes()
+                .to_vec(),
             RedisType::SimpleString { data } => format!("+{}\r\n", data).as_bytes().to_vec(),
             RedisType::SimpleError { message } => format!("-{}\r\n", message).as_bytes().to_vec(),
         }
@@ -124,17 +110,17 @@ pub enum RedisCommand {
 }
 
 impl RedisCommand {
-    pub fn parse(data: &RedisType) -> Result<Option<RedisCommand>, anyhow::Error> {
+    pub fn parse(data: &RedisType) -> Option<RedisCommand> {
         match data {
-            RedisType::List { len, data } => {
+            RedisType::List { data } => {
                 let vector = data;
 
-                match len {
+                match vector.len() {
                     2 => {
                         if let Some(data) = Self::extract_string(&vector[0]) {
                             if data.to_lowercase() == "echo" {
                                 if let Some(data) = Self::extract_string(&vector[1]) {
-                                    return Ok(Some(RedisCommand::ECHO(data.to_string())));
+                                    return Some(RedisCommand::ECHO(data.to_string()));
                                 }
                             }
                         }
@@ -147,13 +133,13 @@ impl RedisCommand {
             }
             RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => {
                 if data.to_lowercase() == "ping" {
-                    return Ok(Some(RedisCommand::PING));
+                    return Some(RedisCommand::PING);
                 }
             }
             RedisType::SimpleError { .. } => (), // Do nothing
         }
 
-        Ok(None)
+        None
     }
 
     pub fn execute(&self) -> RedisType {
@@ -162,7 +148,6 @@ impl RedisCommand {
                 data: "PONG".to_string(),
             },
             RedisCommand::ECHO(payload) => RedisType::BulkString {
-                len: payload.len(),
                 data: payload.clone(),
             },
         }
@@ -209,7 +194,6 @@ mod tests {
     async fn test_parse_bulk_string() {
         let input = "$11\r\nHello\nWorld\r\n";
         let expected = RedisType::BulkString {
-            len: 11,
             data: "Hello\nWorld".to_string(),
         };
 
@@ -220,14 +204,11 @@ mod tests {
     async fn test_parse_list() {
         let input = "*2\r\n$3\r\nfoo\r\n$4\r\nbarr\r\n";
         let expected = RedisType::List {
-            len: 2,
             data: vec![
                 Box::new(RedisType::BulkString {
-                    len: 3,
                     data: "foo".to_string(),
                 }),
                 Box::new(RedisType::BulkString {
-                    len: 4,
                     data: "barr".to_string(),
                 }),
             ],
@@ -242,58 +223,50 @@ mod tests {
             data: "PING".to_string(),
         };
 
-        let result = RedisCommand::parse(&data).unwrap();
+        let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::PING));
 
         let data = RedisType::List {
-            len: 1,
             data: vec![Box::new(RedisType::BulkString {
-                len: 4,
                 data: "Ping".to_string(),
             })],
         };
 
-        let result = RedisCommand::parse(&data).unwrap();
+        let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::PING));
     }
 
     #[test]
     fn test_parse_echo() {
         let data = RedisType::List {
-            len: 2,
             data: vec![
                 Box::new(RedisType::BulkString {
-                    len: 4,
                     data: "echo".to_string(),
                 }),
                 Box::new(RedisType::BulkString {
-                    len: 5,
                     data: "hello".to_string(),
                 }),
             ],
         };
 
-        let result = RedisCommand::parse(&data).unwrap();
+        let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::ECHO("hello".to_string())));
     }
 
     #[test]
     fn test_parse_invalid() {
         let data = RedisType::List {
-            len: 2,
             data: vec![
                 Box::new(RedisType::BulkString {
-                    len: 7,
                     data: "invalid".to_string(),
                 }),
                 Box::new(RedisType::BulkString {
-                    len: 5,
                     data: "world".to_string(),
                 }),
             ],
         };
 
-        let result = RedisCommand::parse(&data).unwrap();
+        let result = RedisCommand::parse(&data);
         assert_eq!(result, None);
     }
 
@@ -303,7 +276,7 @@ mod tests {
             data: "".to_string(),
         };
 
-        let result = RedisCommand::parse(&data).unwrap();
+        let result = RedisCommand::parse(&data);
         assert_eq!(result, None);
     }
 }

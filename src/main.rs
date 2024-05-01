@@ -27,12 +27,10 @@ async fn main() {
 async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
     let mut buf = BufReader::new(&mut stream);
 
-    while let Ok(Some(command)) = RedisType::parse(&mut buf).await {
-        println!("Input command: {:?}", command);
+    while let Ok(Some(input)) = RedisType::parse(&mut buf).await {
+        println!("Input type: {:?}", input);
 
-        let maybe_command = RedisCommand::parse(&command)?;
-
-        match maybe_command {
+        match RedisCommand::parse(&input) {
             Some(command) => {
                 println!("Executing command: {:?}", command);
                 let result = command.execute();
