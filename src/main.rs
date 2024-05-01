@@ -1,19 +1,25 @@
-use redis_starter_rust::{RedisCommand, RedisType, RedisWritable};
+use std::borrow::BorrowMut;
+use std::sync::{Arc, Mutex};
+
+use redis_starter_rust::redis_runtime::RedisRuntime;
+use redis_starter_rust::{redis_command::RedisCommand, redis_type::RedisType, RedisWritable};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
+    let runtime = Arc::new(Mutex::new(RedisRuntime::new()));
 
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 println!("accepted new connection");
+                let runtime_clone = Arc::clone(&runtime);
 
                 // Spawn a new task for handling the connection
                 tokio::spawn(async move {
-                    match handle_connection(stream).await {
+                    match handle_connection(stream, runtime_clone).await {
                         Ok(()) => println!("connection handled successfully"),
                         Err(e) => println!("error handling connection: {}", e),
                     }
@@ -24,7 +30,10 @@ async fn main() {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    runtine: Arc<Mutex<RedisRuntime>>,
+) -> Result<(), anyhow::Error> {
     let mut buf = BufReader::new(&mut stream);
 
     while let Ok(Some(input)) = RedisType::parse(&mut buf).await {
@@ -33,7 +42,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), anyhow::Error> {
         match RedisCommand::parse(&input) {
             Some(command) => {
                 println!("Executing command: {:?}", command);
-                let result = command.execute();
+                let result = runtine.lock().unwrap().borrow_mut().execute(command);
                 println!("Command result: {:?}", result);
 
                 buf.write_all(&result.write_as_protocol()).await?
