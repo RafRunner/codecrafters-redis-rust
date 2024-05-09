@@ -83,7 +83,7 @@ impl RedisCommand {
                         ttl = data.get(i + 1).and_then(|val| {
                             Self::extract_string(val)
                                 .and_then(|v| v.parse::<u64>().ok())
-                                .map(|ttl| Duration::from_millis(ttl))
+                                .map(Duration::from_millis)
                         });
                         i += 2; // Skip the next item since it's part of this option
                     }
@@ -172,7 +172,7 @@ mod tests {
         let result = RedisCommand::parse(&data);
         assert_eq!(result, None);
     }
- 
+
     #[test]
     fn test_set_command() {
         let set = create_list(&["SET", "mykey", "myvalue"]);
