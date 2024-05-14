@@ -58,7 +58,7 @@ impl RedisType {
                 Self::SimpleString { data: line }
             }
             character => Self::SimpleError {
-                message: format!("Unknow command {}", character),
+                message: format!("Unknown command {}", character),
             },
         }))
     }

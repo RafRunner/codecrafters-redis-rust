@@ -14,6 +14,9 @@ pub enum RedisCommand {
     GET {
         key: String,
     },
+    INFO {
+        arg: String,
+    },
 }
 
 impl RedisCommand {
@@ -28,6 +31,7 @@ impl RedisCommand {
                             "echo" => Self::parse_echo(&data[1..]),
                             "get" => Self::parse_get(&data[1..]),
                             "set" => Self::parse_set(&data[1..]),
+                            "info" => Self::parse_info(&data[1..]),
                             _ => None,
                         },
                         None => None,
@@ -98,6 +102,14 @@ impl RedisCommand {
             key,
             val: value,
             ttl,
+        })
+    }
+
+    fn parse_info(data: &[Box<RedisType>]) -> Option<RedisCommand> {
+        data.get(0).and_then(|arg| {
+            Self::extract_string(arg).map(|arg| RedisCommand::INFO {
+                arg: arg.to_string(),
+            })
         })
     }
 }
@@ -207,6 +219,17 @@ mod tests {
             RedisCommand::parse(&get),
             Some(RedisCommand::GET {
                 key: "mykey".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_info_command() {
+        let get = create_list(&["info", "replication"]);
+        assert_eq!(
+            RedisCommand::parse(&get),
+            Some(RedisCommand::INFO {
+                arg: "replication".to_string()
             })
         );
     }

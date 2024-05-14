@@ -11,12 +11,14 @@ struct ValueWithExpiry {
 #[derive(Debug)]
 pub struct RedisRuntime {
     values: Arc<tokio::sync::RwLock<HashMap<String, ValueWithExpiry>>>,
+    replication_role: ReplicationRole,
 }
 
 impl RedisRuntime {
     pub fn new() -> Self {
         Self {
             values: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            replication_role: ReplicationRole::Master,
         }
     }
 
@@ -56,6 +58,14 @@ impl RedisRuntime {
 
                 RedisType::NullBulkString
             }
+            RedisCommand::INFO { arg } => match arg.to_lowercase().as_str() {
+                "replication" => RedisType::BulkString {
+                    data: format!("role:{}", self.replication_role),
+                },
+                unknown => RedisType::SimpleError {
+                    message: format!("Unknown arg for INFO: {}", unknown),
+                },
+            },
         }
     }
 }
@@ -63,6 +73,24 @@ impl RedisRuntime {
 impl Default for RedisRuntime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReplicationRole {
+    Master,
+    Slave,
+}
+
+impl std::fmt::Display for ReplicationRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}",
+            match self {
+                ReplicationRole::Master => "master",
+                ReplicationRole::Slave => "slave",
+            },
+        ))
     }
 }
 
@@ -195,6 +223,41 @@ mod tests {
             result,
             RedisType::BulkString {
                 data: "value1".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replication_info() {
+        let runtime = RedisRuntime::new();
+        assert_eq!(ReplicationRole::Master, runtime.replication_role);
+
+        let result = runtime
+            .execute(RedisCommand::INFO {
+                arg: "replication".to_string(),
+            })
+            .await;
+        assert_eq!(
+            result,
+            RedisType::BulkString {
+                data: "role:master".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unknown_info() {
+        let runtime = RedisRuntime::new();
+
+        let result = runtime
+            .execute(RedisCommand::INFO {
+                arg: "anything".to_string(),
+            })
+            .await;
+        assert_eq!(
+            result,
+            RedisType::SimpleError {
+                message: "Unknown arg for INFO: anything".to_string()
             }
         );
     }
