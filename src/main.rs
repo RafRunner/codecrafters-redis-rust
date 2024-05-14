@@ -8,8 +8,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
-    let port: usize = args()
-        .find(|arg| arg == "port")
+    let args_vec: Vec<String> = args().collect();
+    let port_index = args_vec
+        .iter()
+        .enumerate()
+        .find(|(_, arg)| *arg == "port")
+        .map(|(i, _)| i);
+
+    let port: usize = port_index
+        .and_then(|i| args_vec.get(i + 1))
         .map(|p| p.parse().expect("Invalid port number!"))
         .unwrap_or(6379);
 
