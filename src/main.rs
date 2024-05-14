@@ -2,13 +2,23 @@ use std::sync::Arc;
 
 use redis_starter_rust::redis_runtime::RedisRuntime;
 use redis_starter_rust::{redis_command::RedisCommand, redis_type::RedisType, RedisWritable};
+use std::env::args;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
+    let port: usize = args()
+        .find(|arg| arg == "port")
+        .map(|p| p.parse().expect("Invalid port number!"))
+        .unwrap_or(6379);
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
     let runtime = Arc::new(RedisRuntime::new());
+
+    println!("Listening on port {}", port);
 
     loop {
         match listener.accept().await {
