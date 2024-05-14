@@ -12,7 +12,7 @@ async fn main() {
     let port_index = args_vec
         .iter()
         .enumerate()
-        .find(|(_, arg)| *arg == "port")
+        .find(|(_, arg)| *arg == "--port")
         .map(|(i, _)| i);
 
     let port: usize = port_index
