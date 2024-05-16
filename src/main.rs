@@ -1,6 +1,8 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use redis_starter_rust::redis_runtime::RedisRuntime;
+use redis_starter_rust::server_config;
 use redis_starter_rust::{redis_command::RedisCommand, redis_type::RedisType, RedisWritable};
 use std::env;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -8,24 +10,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
-    let mut port: u16 = 6379;
     let args: Vec<String> = env::args().collect();
+    let config = server_config::parse_command_line_args(&args);
 
-    let mut args_iter = args.iter();
-    while let Some(arg) = args_iter.next() {
-        if arg == "--port" {
-            if let Some(p) = args_iter.next() {
-                port = p.parse().expect("Invalid port number!");
-            }
-        }
-    }
+    let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
+    let listener = TcpListener::bind(listen_addr).await.unwrap();
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-    let runtime = Arc::new(RedisRuntime::new());
+    println!("Listening on port {}", config.port);
 
-    println!("Listening on port {}", port);
+    let runtime = Arc::new(RedisRuntime::new(config));
 
     loop {
         match listener.accept().await {

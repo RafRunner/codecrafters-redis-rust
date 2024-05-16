@@ -1,6 +1,6 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
-use crate::{redis_command::RedisCommand, redis_type::RedisType};
+use crate::{redis_command::RedisCommand, redis_type::RedisType, server_config::ServerConfig};
 
 #[derive(Debug)]
 struct ValueWithExpiry {
@@ -15,10 +15,13 @@ pub struct RedisRuntime {
 }
 
 impl RedisRuntime {
-    pub fn new() -> Self {
+    pub fn new(server_config: ServerConfig) -> Self {
         Self {
             values: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            replication_role: ReplicationRole::Master,
+            replication_role: server_config
+                .replica_addr
+                .map(|addr| ReplicationRole::Slave { replicaof: addr })
+                .unwrap_or(ReplicationRole::Master),
         }
     }
 
@@ -60,7 +63,7 @@ impl RedisRuntime {
             }
             RedisCommand::INFO { arg } => match arg.to_lowercase().as_str() {
                 "replication" => RedisType::BulkString {
-                    data: format!("role:{}", self.replication_role),
+                    data: format!("role:{}", self.replication_role.type_str()),
                 },
                 unknown => RedisType::SimpleError {
                     message: format!("Unknown arg for INFO: {}", unknown),
@@ -72,25 +75,22 @@ impl RedisRuntime {
 
 impl Default for RedisRuntime {
     fn default() -> Self {
-        Self::new()
+        Self::new(Default::default())
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReplicationRole {
     Master,
-    Slave,
+    Slave { replicaof: SocketAddr },
 }
 
-impl std::fmt::Display for ReplicationRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{}",
-            match self {
-                ReplicationRole::Master => "master",
-                ReplicationRole::Slave => "slave",
-            },
-        ))
+impl ReplicationRole {
+    fn type_str(&self) -> &str {
+        match self {
+            ReplicationRole::Master => "master",
+            ReplicationRole::Slave { .. } => "slave",
+        }
     }
 }
 
@@ -102,7 +102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_command() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
         let result = runtime.execute(RedisCommand::PING).await;
         assert_eq!(
             result,
@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_echo_command() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
         let result = runtime
             .execute(RedisCommand::ECHO("Hello, Redis!".to_string()))
             .await;
@@ -128,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_command() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
         let result = runtime
             .execute(RedisCommand::SET {
                 key: "key1".to_string(),
@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_command_with_ttl() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
 
         let key = "key_with_ttl";
         let result = runtime
@@ -203,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_command_existing_key() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
         runtime.values.write().await.insert(
             "key1".to_string(),
             ValueWithExpiry {
@@ -229,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_replication_info() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
         assert_eq!(ReplicationRole::Master, runtime.replication_role);
 
         let result = runtime
@@ -247,7 +247,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_info() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
 
         let result = runtime
             .execute(RedisCommand::INFO {
@@ -264,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_command_non_existing_key() {
-        let runtime = RedisRuntime::new();
+        let runtime = RedisRuntime::default();
 
         let result = runtime
             .execute(RedisCommand::GET {
