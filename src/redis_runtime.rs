@@ -1,9 +1,12 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
+use anyhow::Ok;
 use rand::{distributions::Alphanumeric, Rng};
 
 use crate::{
-    redis_client::RedisClient, redis_command::RedisCommand, redis_type::RedisType,
+    redis_client::RedisClient,
+    redis_command::{RedisCommand, ReplConfArgs},
+    redis_type::RedisType,
     server_config::ServerConfig,
 };
 
@@ -16,6 +19,7 @@ struct ValueWithExpiry {
 #[derive(Debug)]
 pub struct RedisRuntime {
     values: Arc<tokio::sync::RwLock<HashMap<String, ValueWithExpiry>>>,
+    config: ServerConfig,
     replication_role: ReplicationRole,
     replication_id: String,
     replication_offset: u16,
@@ -28,9 +32,12 @@ impl RedisRuntime {
             replication_role: server_config
                 .replica_addr
                 .map(|addr| ReplicationRole::Slave { replicaof: addr })
-                .unwrap_or(ReplicationRole::Master),
+                .unwrap_or_else(|| ReplicationRole::Master {
+                    replicas: Vec::new(),
+                }),
             replication_id: generate_alphanumeric_string(40),
             replication_offset: 0,
+            config: server_config,
         }
     }
 
@@ -85,35 +92,39 @@ master_repl_offset:{}",
                     message: format!("Unknown arg for INFO: {}", unknown),
                 },
             },
+            RedisCommand::REPLCONF { .. } => todo!(),
         }
     }
 
     pub async fn perform_handshake(&self) -> Result<(), anyhow::Error> {
         match self.replication_role {
-            ReplicationRole::Master => Ok(()), // Do nothing
+            ReplicationRole::Master { .. } => Ok(()), // Do nothing
             ReplicationRole::Slave { replicaof } => {
                 println!("Starting handshake");
-                let client = RedisClient::new(replicaof);
+                let mut client = RedisClient::new(replicaof).await?;
 
                 println!("Sending PING");
                 let response = client.send_command(&RedisCommand::PING).await?;
-                println!("Response: {:?}", &response);
 
-                match response
-                    .extract_string()
-                    .map(|string| string.to_lowercase())
-                    .as_deref()
-                {
-                    Some("pong") => Ok(()),
-                    Some(other) => Err(anyhow::anyhow!(
-                        "Unexpected return from ping. Expected string PONG, received: {:?}",
-                        other
-                    )),
-                    None => Err(anyhow::anyhow!(
-                        "Unexpected return type from ping. Expected string, received: {:?}",
-                        response
-                    )),
-                }
+                response.expect_string("pong", "Unexpected return from ping")?;
+
+                println!("Sending port {}", self.config.port);
+                let response = client
+                    .send_command(&RedisCommand::REPLCONF {
+                        arg: ReplConfArgs::Port(self.config.port),
+                    })
+                    .await?;
+                response.expect_string("ok", "Unexpected return from REPLCONF port")?;
+
+                println!("Sending capabilities");
+                let response: RedisType = client
+                    .send_command(&RedisCommand::REPLCONF {
+                        arg: ReplConfArgs::Capabilities,
+                    })
+                    .await?;
+                response.expect_string("ok", "Unexpected return from REPLCONF capabilities")?;
+
+                Ok(())
             }
         }
     }
@@ -126,15 +137,20 @@ impl Default for RedisRuntime {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct Replica {
+    addr: SocketAddr,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum ReplicationRole {
-    Master,
+    Master { replicas: Vec<Replica> },
     Slave { replicaof: SocketAddr },
 }
 
 impl ReplicationRole {
     fn type_str(&self) -> &str {
         match self {
-            ReplicationRole::Master => "master",
+            ReplicationRole::Master { .. } => "master",
             ReplicationRole::Slave { .. } => "slave",
         }
     }
@@ -244,7 +260,12 @@ mod tests {
     #[tokio::test]
     async fn test_replication_info() {
         let runtime = RedisRuntime::default();
-        assert_eq!(ReplicationRole::Master, runtime.replication_role);
+        assert_eq!(
+            ReplicationRole::Master {
+                replicas: Vec::new()
+            },
+            runtime.replication_role
+        );
 
         let result = runtime
             .execute(RedisCommand::INFO {

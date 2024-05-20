@@ -78,6 +78,22 @@ impl RedisType {
         }
     }
 
+    pub fn expect_string(
+        &self,
+        expected: &str,
+        message_start: &str,
+    ) -> Result<&str, anyhow::Error> {
+        match self.extract_string() {
+            Some(string) if expected.to_lowercase() == string.to_lowercase() => Ok(string),
+            _ => Err(anyhow::anyhow!(
+                "{}. Expected string {}, received: {:?}",
+                message_start,
+                expected,
+                self
+            )),
+        }
+    }
+
     pub fn simple_string(data: &str) -> Self {
         RedisType::SimpleString {
             data: data.to_string(),

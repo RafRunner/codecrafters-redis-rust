@@ -17,6 +17,9 @@ pub enum RedisCommand {
     INFO {
         arg: String,
     },
+    REPLCONF {
+        arg: ReplConfArgs,
+    },
 }
 
 impl RedisCommand {
@@ -26,12 +29,15 @@ impl RedisCommand {
                 if data.len() == 1 {
                     Self::parse(&data[0])
                 } else {
+                    let rest = &data[1..];
+
                     match data[0].extract_string() {
                         Some(command) => match command.to_lowercase().as_str() {
-                            "echo" => Self::parse_echo(&data[1..]),
-                            "get" => Self::parse_get(&data[1..]),
-                            "set" => Self::parse_set(&data[1..]),
-                            "info" => Self::parse_info(&data[1..]),
+                            "echo" => Self::parse_echo(rest),
+                            "get" => Self::parse_get(rest),
+                            "set" => Self::parse_set(rest),
+                            "info" => Self::parse_info(rest),
+                            "replconf" => Self::parse_replconf(rest),
                             _ => None,
                         },
                         None => None,
@@ -50,7 +56,9 @@ impl RedisCommand {
 
     fn parse_echo(data: &[Box<RedisType>]) -> Option<RedisCommand> {
         data.get(0).and_then(|argument| {
-            argument.extract_string().map(|argument| RedisCommand::ECHO(argument.to_string()))
+            argument
+                .extract_string()
+                .map(|argument| RedisCommand::ECHO(argument.to_string()))
         })
     }
 
@@ -105,18 +113,39 @@ impl RedisCommand {
             })
         })
     }
+
+    fn parse_replconf(data: &[Box<RedisType>]) -> Option<RedisCommand> {
+        if data.len() < 2 {
+            return None;
+        }
+
+        match data[0].extract_string() {
+            Some("listening-port") => {
+                let port: u16 = data[1].extract_string().and_then(|raw| raw.parse().ok())?;
+
+                Some(RedisCommand::REPLCONF {
+                    arg: ReplConfArgs::Port(port),
+                })
+            }
+            Some("capa") => match data[1].extract_string() {
+                Some("npsync2") => Some(RedisCommand::REPLCONF {
+                    arg: ReplConfArgs::Capabilities,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl RedisWritable for RedisCommand {
     fn write_as_protocol(&self) -> Vec<u8> {
         let parts = match self {
             Self::PING => vec![RedisType::bulk_string("PING")],
-
             Self::ECHO(value) => vec![
                 RedisType::bulk_string("ECHO"),
                 RedisType::bulk_string(value),
             ],
-
             Self::SET { key, val, ttl } => {
                 let mut command = vec![
                     RedisType::bulk_string("SET"),
@@ -132,13 +161,35 @@ impl RedisWritable for RedisCommand {
                 command
             }
             Self::GET { key } => vec![RedisType::bulk_string("GET"), RedisType::bulk_string(key)],
+            Self::INFO { arg } => vec![RedisType::bulk_string("INFO"), RedisType::bulk_string(arg)],
+            Self::REPLCONF { arg } => {
+                let mut command = vec![RedisType::bulk_string("REPLCONF")];
 
-            Self::INFO { arg } => vec![RedisType::bulk_string("info"), RedisType::bulk_string(arg)],
+                match arg {
+                    ReplConfArgs::Port(port) => {
+                        command.push(RedisType::bulk_string("listening-port"));
+                        command.push(RedisType::bulk_string(&port.to_string()))
+                    }
+                    ReplConfArgs::Capabilities => {
+                        command.push(RedisType::bulk_string("capa"));
+                        command.push(RedisType::bulk_string("npsync2"))
+                    }
+                };
+
+                command
+            }
         };
 
         RedisType::list(parts).write_as_protocol()
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReplConfArgs {
+    Port(u16),
+    Capabilities,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
