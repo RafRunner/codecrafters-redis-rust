@@ -125,12 +125,7 @@ mod tests {
     async fn test_ping_command() {
         let runtime = RedisRuntime::default();
         let result = runtime.execute(RedisCommand::PING).await;
-        assert_eq!(
-            result,
-            RedisType::SimpleString {
-                data: "PONG".to_string()
-            }
-        );
+        assert_eq!(result, RedisType::simple_string("PONG"));
     }
 
     #[tokio::test]
@@ -139,12 +134,7 @@ mod tests {
         let result = runtime
             .execute(RedisCommand::ECHO("Hello, Redis!".to_string()))
             .await;
-        assert_eq!(
-            result,
-            RedisType::BulkString {
-                data: "Hello, Redis!".to_string()
-            }
-        );
+        assert_eq!(result, RedisType::bulk_string("Hello, Redis!"));
     }
 
     #[tokio::test]
@@ -153,28 +143,16 @@ mod tests {
         let result = runtime
             .execute(RedisCommand::SET {
                 key: "key1".to_string(),
-                val: RedisType::BulkString {
-                    data: "value1".to_string(),
-                },
+                val: RedisType::bulk_string("value1"),
                 ttl: None,
             })
             .await;
-        assert_eq!(
-            result,
-            RedisType::SimpleString {
-                data: "OK".to_string()
-            }
-        );
+        assert_eq!(result, RedisType::simple_string("OK"));
 
         // Ensure the value is actually set
         let guard = runtime.values.read().await;
         let value = &guard.get("key1").unwrap().value;
-        assert_eq!(
-            value,
-            &RedisType::BulkString {
-                data: "value1".to_string()
-            }
-        );
+        assert_eq!(value, &RedisType::bulk_string("value1"));
     }
 
     #[tokio::test]
@@ -185,18 +163,11 @@ mod tests {
         let result = runtime
             .execute(RedisCommand::SET {
                 key: key.to_string(),
-                val: RedisType::BulkString {
-                    data: "temporary".to_string(),
-                },
+                val: RedisType::bulk_string("temporary"),
                 ttl: Some(Duration::from_millis(100)),
             })
             .await;
-        assert_eq!(
-            result,
-            RedisType::SimpleString {
-                data: "OK".to_string()
-            }
-        );
+        assert_eq!(result, RedisType::simple_string("OK"));
 
         // Ensure the value is actually set
         let value = runtime
@@ -204,12 +175,7 @@ mod tests {
                 key: key.to_string(),
             })
             .await;
-        assert_eq!(
-            value,
-            RedisType::BulkString {
-                data: "temporary".to_string()
-            }
-        );
+        assert_eq!(value, RedisType::bulk_string("temporary"));
 
         tokio::time::sleep(Duration::from_millis(101)).await;
 
@@ -228,9 +194,8 @@ mod tests {
         runtime.values.write().await.insert(
             "key1".to_string(),
             ValueWithExpiry {
-                value: RedisType::BulkString {
-                    data: "value1".to_string(),
-                },
+                value: RedisType::bulk_string("value1"),
+
                 expiry: None,
             },
         );
@@ -242,9 +207,7 @@ mod tests {
             .await;
         assert_eq!(
             result,
-            RedisType::BulkString {
-                data: "value1".to_string()
-            }
+            RedisType::bulk_string("value1")
         );
     }
 
@@ -259,14 +222,14 @@ mod tests {
             })
             .await;
 
-            match result {
-                RedisType::BulkString { data } => {
-                    assert!(data.contains("role:master"));
-                    assert!(data.contains("master_replid:"));
-                    assert!(data.contains("master_repl_offset:0"));
-                },
-                _ => panic!("Result was not a bulk string"),
+        match result {
+            RedisType::BulkString { data } => {
+                assert!(data.contains("role:master"));
+                assert!(data.contains("master_replid:"));
+                assert!(data.contains("master_repl_offset:0"));
             }
+            _ => panic!("Result was not a bulk string"),
+        }
     }
 
     #[tokio::test]
@@ -280,9 +243,7 @@ mod tests {
             .await;
         assert_eq!(
             result,
-            RedisType::SimpleError {
-                message: "Unknown arg for INFO: anything".to_string()
-            }
+            RedisType::simple_error("Unknown arg for INFO: anything")
         );
     }
 

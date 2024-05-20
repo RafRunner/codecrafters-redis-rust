@@ -23,18 +23,18 @@ async fn main() {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                println!("accepted new connection");
+                println!("Accepted new connection");
                 let runtime_clone = Arc::clone(&runtime);
 
                 // Spawn a new task for handling the connection
                 tokio::spawn(async move {
                     match handle_connection(stream, runtime_clone.as_ref()).await {
-                        Ok(()) => println!("connection handled successfully"),
-                        Err(e) => println!("error handling connection: {}", e),
+                        Ok(()) => println!("Connection handled successfully"),
+                        Err(e) => println!("Error handling connection: {}", e),
                     }
                 });
             }
-            Err(e) => println!("error accepting connection: {}", e),
+            Err(e) => println!("Error accepting connection: {}", e),
         }
     }
 }

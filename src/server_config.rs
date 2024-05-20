@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Invalid port number!")]
+    #[should_panic(expected = "Invalid port number provided: invalid_port")]
     fn test_parse_invalid_port() {
         let args = vec!["--port".to_string(), "invalid_port".to_string()];
         let _config = ServerConfig::parse_command_line_args(&args);

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::redis_type::RedisType;
+use crate::{redis_type::RedisType, RedisWritable};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RedisCommand {
@@ -114,22 +114,41 @@ impl RedisCommand {
     }
 }
 
+impl RedisWritable for RedisCommand {
+    fn write_as_protocol(&self) -> Vec<u8> {
+        match self {
+            Self::PING => RedisType::bulk_string("PONG").write_as_protocol(),
+            Self::ECHO(value) => RedisType::bulk_string(value).write_as_protocol(),
+            Self::SET { key, val, ttl } => {
+                let mut command = vec![
+                    RedisType::bulk_string("SET"),
+                    RedisType::bulk_string(key),
+                    val.clone(),
+                ];
+
+                if let Some(ttl) = ttl {
+                    command.push(RedisType::bulk_string("px"));
+                    command.push(RedisType::bulk_string(&ttl.as_millis().to_string()));
+                }
+
+                RedisType::list(command).write_as_protocol()
+            }
+            Self::GET { key } => {
+                let command = vec![RedisType::bulk_string("GET"), RedisType::bulk_string(key)];
+
+                RedisType::list(command).write_as_protocol()
+            }
+            Self::INFO { arg } => {
+                let command = vec![RedisType::bulk_string("info"), RedisType::bulk_string(arg)];
+
+                RedisType::list(command).write_as_protocol()
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn create_list(strings: &[&str]) -> RedisType {
-        RedisType::List {
-            data: strings
-                .iter()
-                .map(|elem| {
-                    Box::new(RedisType::BulkString {
-                        data: elem.to_string(),
-                    })
-                })
-                .collect(),
-        }
-    }
 
     #[test]
     fn test_parse_ping() {
@@ -140,11 +159,7 @@ mod tests {
         let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::PING));
 
-        let data = RedisType::List {
-            data: vec![Box::new(RedisType::BulkString {
-                data: "Ping".to_string(),
-            })],
-        };
+        let data = RedisType::list(vec![RedisType::bulk_string("Ping")]);
 
         let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::PING));
@@ -152,16 +167,10 @@ mod tests {
 
     #[test]
     fn test_parse_echo() {
-        let data = RedisType::List {
-            data: vec![
-                Box::new(RedisType::BulkString {
-                    data: "echo".to_string(),
-                }),
-                Box::new(RedisType::BulkString {
-                    data: "hello".to_string(),
-                }),
-            ],
-        };
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("echo"),
+            RedisType::bulk_string("hello"),
+        ]);
 
         let result = RedisCommand::parse(&data);
         assert_eq!(result, Some(RedisCommand::ECHO("hello".to_string())));
@@ -169,7 +178,10 @@ mod tests {
 
     #[test]
     fn test_parse_invalid() {
-        let data = create_list(&["invalid", "world"]);
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("invalid"),
+            RedisType::bulk_string("world"),
+        ]);
 
         let result = RedisCommand::parse(&data);
         assert_eq!(result, None);
@@ -187,26 +199,33 @@ mod tests {
 
     #[test]
     fn test_set_command() {
-        let set = create_list(&["SET", "mykey", "myvalue"]);
+        let set = RedisType::list(vec![
+            RedisType::bulk_string("SET"),
+            RedisType::bulk_string("mykey"),
+            RedisType::bulk_string("myvalue"),
+        ]);
         assert_eq!(
             RedisCommand::parse(&set),
             Some(RedisCommand::SET {
                 key: "mykey".to_string(),
-                val: RedisType::BulkString {
-                    data: "myvalue".to_string(),
-                },
+                val: RedisType::bulk_string("myvalue"),
                 ttl: None
             })
         );
 
-        let set_with_expiry = create_list(&["SET", "MyKeyTwo", "OtherValue", "px", "200"]);
+        let set_with_expiry = RedisType::list(vec![
+            RedisType::bulk_string("SET"),
+            RedisType::bulk_string("MyKeyTwo"),
+            RedisType::bulk_string("OtherValue"),
+            RedisType::bulk_string("px"),
+            RedisType::bulk_string("200"),
+        ]);
         assert_eq!(
             RedisCommand::parse(&set_with_expiry),
             Some(RedisCommand::SET {
                 key: "MyKeyTwo".to_string(),
-                val: RedisType::BulkString {
-                    data: "OtherValue".to_string(),
-                },
+                val: RedisType::bulk_string("OtherValue"),
+
                 ttl: Some(Duration::from_millis(200))
             })
         );
@@ -214,7 +233,10 @@ mod tests {
 
     #[test]
     fn test_get_command() {
-        let get = create_list(&["GET", "mykey"]);
+        let get = RedisType::list(vec![
+            RedisType::bulk_string("GET"),
+            RedisType::bulk_string("mykey"),
+        ]);
         assert_eq!(
             RedisCommand::parse(&get),
             Some(RedisCommand::GET {
@@ -225,7 +247,10 @@ mod tests {
 
     #[test]
     fn test_info_command() {
-        let get = create_list(&["info", "replication"]);
+        let get = RedisType::list(vec![
+            RedisType::bulk_string("info"),
+            RedisType::bulk_string("replication"),
+        ]);
         assert_eq!(
             RedisCommand::parse(&get),
             Some(RedisCommand::INFO {
@@ -244,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_empty_list() {
-        let empty = RedisType::List { data: vec![] };
+        let empty = RedisType::list(vec![]);
         assert_eq!(RedisCommand::parse(&empty), None);
     }
 }

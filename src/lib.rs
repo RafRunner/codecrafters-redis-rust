@@ -1,3 +1,4 @@
+pub mod redis_client;
 pub mod redis_command;
 pub mod redis_runtime;
 pub mod redis_type;

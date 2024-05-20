@@ -31,7 +31,7 @@ impl RedisType {
 
         Ok(Some(match command_char {
             '*' => {
-                let len = Self::read_len(reader).await?;
+                let len: u64 = Self::read_line(reader).await?.parse()?;
                 let mut elements = Vec::new();
 
                 for _ in 0..len {
@@ -43,12 +43,20 @@ impl RedisType {
                 Self::List { data: elements }
             }
             '$' => {
-                let len = Self::read_len(reader).await?;
-                let mut buffer = vec![0; len + 2]; // +2 for CRLF
-                reader.read_exact(&mut buffer).await?;
-                let data = String::from_utf8(buffer[..len].to_vec())?;
+                let len: i64 = Self::read_line(reader).await?.parse()?;
+                if len == -1 {
+                    Self::NullBulkString
+                } else if len < 0 {
+                    return Err(anyhow::anyhow!("Invalid bulk string len ({})!", len));
+                } else {
+                    let len = len as usize;
 
-                Self::BulkString { data }
+                    let mut buffer = vec![0; len + 2]; // +2 for CRLF
+                    reader.read_exact(&mut buffer).await?;
+                    let data = String::from_utf8(buffer[..len].to_vec())?;
+
+                    Self::BulkString { data }
+                }
             }
             '+' => {
                 let mut line = String::new();
@@ -63,15 +71,37 @@ impl RedisType {
         }))
     }
 
-    async fn read_len(
+    pub fn simple_string(data: &str) -> Self {
+        RedisType::SimpleString {
+            data: data.to_string(),
+        }
+    }
+
+    pub fn bulk_string(data: &str) -> Self {
+        RedisType::BulkString {
+            data: data.to_string(),
+        }
+    }
+
+    pub fn list(data: Vec<Self>) -> Self {
+        RedisType::List {
+            data: data.into_iter().map(|d| Box::new(d)).collect(),
+        }
+    }
+
+    pub fn simple_error(message: &str) -> Self {
+        RedisType::SimpleError {
+            message: message.to_string(),
+        }
+    }
+
+    async fn read_line(
         reader: &mut BufReader<impl AsyncRead + Unpin>,
-    ) -> Result<usize, anyhow::Error> {
+    ) -> Result<String, anyhow::Error> {
         let mut line = String::new();
         reader.read_line(&mut line).await?;
 
-        let line: usize = line.trim_end().parse()?;
-
-        Ok(line)
+        Ok(line.trim_end().to_string())
     }
 }
 
@@ -121,9 +151,7 @@ mod tests {
     #[tokio::test]
     async fn test_parse_simple_string() {
         let input = "+PING\r\n";
-        let expected = RedisType::SimpleString {
-            data: "PING".to_string(),
-        };
+        let expected = RedisType::simple_string("PING");
 
         assert_type_equals(input, expected).await
     }
@@ -131,9 +159,15 @@ mod tests {
     #[tokio::test]
     async fn test_parse_bulk_string() {
         let input = "$11\r\nHello\nWorld\r\n";
-        let expected = RedisType::BulkString {
-            data: "Hello\nWorld".to_string(),
-        };
+        let expected = RedisType::bulk_string("Hello\nWorld");
+
+        assert_type_equals(input, expected).await
+    }
+
+    #[tokio::test]
+    async fn test_parse_null_bulk_string() {
+        let input = "$-1\r\n";
+        let expected = RedisType::NullBulkString;
 
         assert_type_equals(input, expected).await
     }
@@ -141,16 +175,10 @@ mod tests {
     #[tokio::test]
     async fn test_parse_list() {
         let input = "*2\r\n$3\r\nfoo\r\n$4\r\nbarr\r\n";
-        let expected = RedisType::List {
-            data: vec![
-                Box::new(RedisType::BulkString {
-                    data: "foo".to_string(),
-                }),
-                Box::new(RedisType::BulkString {
-                    data: "barr".to_string(),
-                }),
-            ],
-        };
+        let expected = RedisType::list(vec![
+            RedisType::bulk_string("foo"),
+            RedisType::bulk_string("barr"),
+        ]);
 
         assert_type_equals(input, expected).await
     }
