@@ -1,5 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
+use rand::{distributions::Alphanumeric, Rng};
+
 use crate::{redis_command::RedisCommand, redis_type::RedisType, server_config::ServerConfig};
 
 #[derive(Debug)]
@@ -12,6 +14,8 @@ struct ValueWithExpiry {
 pub struct RedisRuntime {
     values: Arc<tokio::sync::RwLock<HashMap<String, ValueWithExpiry>>>,
     replication_role: ReplicationRole,
+    replication_id: String,
+    replication_offset: u16,
 }
 
 impl RedisRuntime {
@@ -22,6 +26,8 @@ impl RedisRuntime {
                 .replica_addr
                 .map(|addr| ReplicationRole::Slave { replicaof: addr })
                 .unwrap_or(ReplicationRole::Master),
+            replication_id: generate_alphanumeric_string(40),
+            replication_offset: 0,
         }
     }
 
@@ -63,7 +69,14 @@ impl RedisRuntime {
             }
             RedisCommand::INFO { arg } => match arg.to_lowercase().as_str() {
                 "replication" => RedisType::BulkString {
-                    data: format!("role:{}", self.replication_role.type_str()),
+                    data: format!(
+                        "role:{}
+master_replid:{}
+master_repl_offset:{}",
+                        self.replication_role.type_str(),
+                        self.replication_id,
+                        self.replication_offset
+                    ),
                 },
                 unknown => RedisType::SimpleError {
                     message: format!("Unknown arg for INFO: {}", unknown),
@@ -92,6 +105,14 @@ impl ReplicationRole {
             ReplicationRole::Slave { .. } => "slave",
         }
     }
+}
+
+fn generate_alphanumeric_string(length: usize) -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(length)
+        .map(char::from)
+        .collect()
 }
 
 #[cfg(test)]
@@ -237,12 +258,15 @@ mod tests {
                 arg: "replication".to_string(),
             })
             .await;
-        assert_eq!(
-            result,
-            RedisType::BulkString {
-                data: "role:master".to_string()
+
+            match result {
+                RedisType::BulkString { data } => {
+                    assert!(data.contains("role:master"));
+                    assert!(data.contains("master_replid:"));
+                    assert!(data.contains("master_repl_offset:0"));
+                },
+                _ => panic!("Result was not a bulk string"),
             }
-        );
     }
 
     #[tokio::test]

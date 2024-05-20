@@ -15,35 +15,40 @@ impl Default for ServerConfig {
     }
 }
 
-pub fn parse_command_line_args(args: &[String]) -> ServerConfig {
-    let mut initial_config = ServerConfig::default();
-    let mut args_iter = args.iter();
+impl ServerConfig {
+    pub fn parse_command_line_args(args: &[String]) -> Self {
+        let mut initial_config = Self::default();
+        let mut args_iter = args.iter();
 
-    while let Some(arg) = args_iter.next() {
-        if arg == "--port" {
-            if let Some(p) = args_iter.next() {
-                initial_config.port = p.parse().expect("Invalid port number!");
-            } else {
-                panic!("Please provide a port value");
-            }
-        } else if arg == "--replicaof" {
-            if let Some(addr) = args_iter.next() {
-                let rust_format = addr.replace(' ', ":");
-
-                initial_config.replica_addr = Some(
-                    rust_format
-                        .to_socket_addrs()
-                        .expect("Not a valid replica address!")
-                        .next()
-                        .unwrap(),
-                );
-            } else {
-                panic!("Please provide a master address");
+        while let Some(arg) = args_iter.next() {
+            if arg == "--port" {
+                if let Some(p) = args_iter.next() {
+                    initial_config.port = p
+                        .parse()
+                        .unwrap_or_else(|_| panic!("Invalid port number provided: {}", p));
+                } else {
+                    panic!("Please provide a port value");
+                }
+            } else if arg == "--replicaof" {
+                if let Some(addr) = args_iter.next() {
+                    match addr.replace(' ', ":").to_socket_addrs() {
+                        Ok(mut addrs) => {
+                            if let Some(address) = addrs.next() {
+                                initial_config.replica_addr = Some(address);
+                            } else {
+                                panic!("No valid addresses found for the provided replica address");
+                            }
+                        }
+                        Err(_) => panic!("Invalid address specified: {}", addr),
+                    }
+                } else {
+                    panic!("Please provide a master address");
+                }
             }
         }
-    }
 
-    initial_config
+        initial_config
+    }
 }
 
 #[cfg(test)]
@@ -53,7 +58,7 @@ mod tests {
     #[test]
     fn test_parse_with_default_port() {
         let args = vec![];
-        let config = parse_command_line_args(&args);
+        let config = ServerConfig::parse_command_line_args(&args);
         assert_eq!(
             config,
             ServerConfig {
@@ -66,7 +71,7 @@ mod tests {
     #[test]
     fn test_parse_custom_port() {
         let args = vec!["--port".to_string(), "8080".to_string()];
-        let config = parse_command_line_args(&args);
+        let config = ServerConfig::parse_command_line_args(&args);
         assert_eq!(
             config,
             ServerConfig {
@@ -80,13 +85,13 @@ mod tests {
     #[should_panic(expected = "Invalid port number!")]
     fn test_parse_invalid_port() {
         let args = vec!["--port".to_string(), "invalid_port".to_string()];
-        let _config = parse_command_line_args(&args);
+        let _config = ServerConfig::parse_command_line_args(&args);
     }
 
     #[test]
     fn test_parse_replica_of() {
         let args = vec!["--replicaof".to_string(), "192.168.1.2 6000".to_string()];
-        let config = parse_command_line_args(&args);
+        let config = ServerConfig::parse_command_line_args(&args);
         let expected_addr = "192.168.1.2:6000".parse().unwrap();
         assert_eq!(
             config,
@@ -105,7 +110,7 @@ mod tests {
             "--port".to_string(),
             "8333".to_string(),
         ];
-        let config = parse_command_line_args(&args);
+        let config = ServerConfig::parse_command_line_args(&args);
         let expected_addr = "localhost:6379".to_socket_addrs().unwrap().next().unwrap();
         assert_eq!(
             config,

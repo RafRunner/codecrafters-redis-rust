@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use redis_starter_rust::redis_runtime::RedisRuntime;
-use redis_starter_rust::server_config;
+use redis_starter_rust::server_config::ServerConfig;
 use redis_starter_rust::{redis_command::RedisCommand, redis_type::RedisType, RedisWritable};
 use std::env;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -11,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
-    let config = server_config::parse_command_line_args(&args);
+    let config = ServerConfig::parse_command_line_args(&args);
 
     let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
     let listener = TcpListener::bind(listen_addr).await.unwrap();
