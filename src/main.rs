@@ -19,6 +19,10 @@ async fn main() {
     println!("Listening on port {}", config.port);
 
     let runtime = Arc::new(RedisRuntime::new(config));
+    runtime
+        .perform_handshake()
+        .await
+        .expect("Error during handshake");
 
     loop {
         match listener.accept().await {
@@ -41,30 +45,35 @@ async fn main() {
 
 async fn handle_connection(
     mut stream: TcpStream,
-    runtine: &RedisRuntime,
+    runtime: &RedisRuntime,
 ) -> Result<(), anyhow::Error> {
     let mut buf = BufReader::new(&mut stream);
 
-    while let Ok(Some(input)) = RedisType::parse(&mut buf).await {
-        println!("Input type: {:?}", input);
+    loop {
+        match RedisType::parse(&mut buf).await {
+            Ok(Some(input)) => {
+                println!("Input type: {:?}", input);
 
-        match RedisCommand::parse(&input) {
-            Some(command) => {
-                println!("Executing command: {:?}", command);
-                let result = runtine.execute(command).await;
-                println!("Command result: {:?}", result);
+                match RedisCommand::parse(&input) {
+                    Some(command) => {
+                        println!("Executing command: {:?}", command);
+                        let result = runtime.execute(command).await;
+                        println!("Command result: {:?}", result);
 
-                buf.write_all(&result.write_as_protocol()).await?
-            }
-            None => {
-                println!("No response built");
-                buf.write_all(
-                    &RedisType::SimpleError {
-                        message: "Unrecognized command".to_string(),
+                        buf.write_all(&result.write_as_protocol()).await?;
                     }
-                    .write_as_protocol(),
-                )
-                .await?
+                    None => {
+                        println!("No response built");
+                        let err = RedisType::simple_error("Unrecognized command");
+                        buf.write_all(&err.write_as_protocol()).await?;
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                println!("Error parsing input type: {:?}", &err);
+                let err = RedisType::simple_error(&err.to_string());
+                buf.write_all(&err.write_as_protocol()).await?;
             }
         }
     }

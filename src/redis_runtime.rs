@@ -2,7 +2,10 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
 use rand::{distributions::Alphanumeric, Rng};
 
-use crate::{redis_command::RedisCommand, redis_type::RedisType, server_config::ServerConfig};
+use crate::{
+    redis_client::RedisClient, redis_command::RedisCommand, redis_type::RedisType,
+    server_config::ServerConfig,
+};
 
 #[derive(Debug)]
 struct ValueWithExpiry {
@@ -82,6 +85,36 @@ master_repl_offset:{}",
                     message: format!("Unknown arg for INFO: {}", unknown),
                 },
             },
+        }
+    }
+
+    pub async fn perform_handshake(&self) -> Result<(), anyhow::Error> {
+        match self.replication_role {
+            ReplicationRole::Master => Ok(()), // Do nothing
+            ReplicationRole::Slave { replicaof } => {
+                println!("Starting handshake");
+                let client = RedisClient::new(replicaof);
+
+                println!("Sending PING");
+                let response = client.send_command(&RedisCommand::PING).await?;
+                println!("Response: {:?}", &response);
+
+                match response
+                    .extract_string()
+                    .map(|string| string.to_lowercase())
+                    .as_deref()
+                {
+                    Some("pong") => Ok(()),
+                    Some(other) => Err(anyhow::anyhow!(
+                        "Unexpected return from ping. Expected string PONG, received: {:?}",
+                        other
+                    )),
+                    None => Err(anyhow::anyhow!(
+                        "Unexpected return type from ping. Expected string, received: {:?}",
+                        response
+                    )),
+                }
+            }
         }
     }
 }
@@ -205,10 +238,7 @@ mod tests {
                 key: "key1".to_string(),
             })
             .await;
-        assert_eq!(
-            result,
-            RedisType::bulk_string("value1")
-        );
+        assert_eq!(result, RedisType::bulk_string("value1"));
     }
 
     #[tokio::test]

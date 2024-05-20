@@ -71,6 +71,13 @@ impl RedisType {
         }))
     }
 
+    pub fn extract_string(&self) -> Option<&str> {
+        match self {
+            RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => Some(data),
+            _ => None,
+        }
+    }
+
     pub fn simple_string(data: &str) -> Self {
         RedisType::SimpleString {
             data: data.to_string(),
@@ -85,7 +92,7 @@ impl RedisType {
 
     pub fn list(data: Vec<Self>) -> Self {
         RedisType::List {
-            data: data.into_iter().map(|d| Box::new(d)).collect(),
+            data: data.into_iter().map(Box::new).collect(),
         }
     }
 

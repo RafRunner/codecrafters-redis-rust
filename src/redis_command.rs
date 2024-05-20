@@ -26,7 +26,7 @@ impl RedisCommand {
                 if data.len() == 1 {
                     Self::parse(&data[0])
                 } else {
-                    match Self::extract_string(&data[0]) {
+                    match data[0].extract_string() {
                         Some(command) => match command.to_lowercase().as_str() {
                             "echo" => Self::parse_echo(&data[1..]),
                             "get" => Self::parse_get(&data[1..]),
@@ -48,22 +48,15 @@ impl RedisCommand {
         }
     }
 
-    fn extract_string(redis_type: &RedisType) -> Option<&str> {
-        match redis_type {
-            RedisType::BulkString { data, .. } | RedisType::SimpleString { data, .. } => Some(data),
-            _ => None,
-        }
-    }
-
     fn parse_echo(data: &[Box<RedisType>]) -> Option<RedisCommand> {
         data.get(0).and_then(|argument| {
-            Self::extract_string(argument).map(|argument| RedisCommand::ECHO(argument.to_string()))
+            argument.extract_string().map(|argument| RedisCommand::ECHO(argument.to_string()))
         })
     }
 
     fn parse_get(data: &[Box<RedisType>]) -> Option<RedisCommand> {
         data.get(0).and_then(|key| {
-            Self::extract_string(key).map(|key| RedisCommand::GET {
+            key.extract_string().map(|key| RedisCommand::GET {
                 key: key.to_string(),
             })
         })
@@ -74,18 +67,18 @@ impl RedisCommand {
             return None;
         }
 
-        let key = Self::extract_string(&data[0])?.to_string();
+        let key = data[0].extract_string()?.to_string();
         let value = data[1].as_ref().clone();
         let mut ttl: Option<Duration> = None;
 
         // Process optional parameters
         let mut i = 2;
         while i < data.len() {
-            if let Some(arg) = Self::extract_string(&data[i]) {
+            if let Some(arg) = data[i].extract_string() {
                 match arg.to_uppercase().as_str() {
                     "PX" => {
                         ttl = data.get(i + 1).and_then(|val| {
-                            Self::extract_string(val)
+                            val.extract_string()
                                 .and_then(|v| v.parse::<u64>().ok())
                                 .map(Duration::from_millis)
                         });
@@ -107,7 +100,7 @@ impl RedisCommand {
 
     fn parse_info(data: &[Box<RedisType>]) -> Option<RedisCommand> {
         data.get(0).and_then(|arg| {
-            Self::extract_string(arg).map(|arg| RedisCommand::INFO {
+            arg.extract_string().map(|arg| RedisCommand::INFO {
                 arg: arg.to_string(),
             })
         })
@@ -116,9 +109,14 @@ impl RedisCommand {
 
 impl RedisWritable for RedisCommand {
     fn write_as_protocol(&self) -> Vec<u8> {
-        match self {
-            Self::PING => RedisType::bulk_string("PONG").write_as_protocol(),
-            Self::ECHO(value) => RedisType::bulk_string(value).write_as_protocol(),
+        let parts = match self {
+            Self::PING => vec![RedisType::bulk_string("PING")],
+
+            Self::ECHO(value) => vec![
+                RedisType::bulk_string("ECHO"),
+                RedisType::bulk_string(value),
+            ],
+
             Self::SET { key, val, ttl } => {
                 let mut command = vec![
                     RedisType::bulk_string("SET"),
@@ -131,19 +129,14 @@ impl RedisWritable for RedisCommand {
                     command.push(RedisType::bulk_string(&ttl.as_millis().to_string()));
                 }
 
-                RedisType::list(command).write_as_protocol()
+                command
             }
-            Self::GET { key } => {
-                let command = vec![RedisType::bulk_string("GET"), RedisType::bulk_string(key)];
+            Self::GET { key } => vec![RedisType::bulk_string("GET"), RedisType::bulk_string(key)],
 
-                RedisType::list(command).write_as_protocol()
-            }
-            Self::INFO { arg } => {
-                let command = vec![RedisType::bulk_string("info"), RedisType::bulk_string(arg)];
+            Self::INFO { arg } => vec![RedisType::bulk_string("info"), RedisType::bulk_string(arg)],
+        };
 
-                RedisType::list(command).write_as_protocol()
-            }
-        }
+        RedisType::list(parts).write_as_protocol()
     }
 }
 #[cfg(test)]
