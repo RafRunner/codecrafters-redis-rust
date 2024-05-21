@@ -92,7 +92,7 @@ master_repl_offset:{}",
                     message: format!("Unknown arg for INFO: {}", unknown),
                 },
             },
-            RedisCommand::REPLCONF { .. } => todo!(),
+            RedisCommand::REPLCONF { .. } => RedisType::simple_string("OK"),
             RedisCommand::PSYNC { .. } => {
                 RedisType::simple_string(&format!("FULLRESYNC {} 0", self.replication_id))
             }
