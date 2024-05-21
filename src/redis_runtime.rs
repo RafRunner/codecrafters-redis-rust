@@ -339,4 +339,19 @@ mod tests {
             .await;
         assert_eq!(result, RedisType::NullBulkString);
     }
+
+    #[tokio::test]
+    async fn test_replconf() {
+        let runtime = RedisRuntime::default();
+
+        let result = runtime
+            .execute(RedisCommand::REPLCONF { arg: ReplConfArgs::Port(1234) })
+            .await;
+        assert_eq!(result, RedisType::simple_string("OK"));
+
+        let result = runtime
+            .execute(RedisCommand::REPLCONF { arg: ReplConfArgs::Capabilities })
+            .await;
+        assert_eq!(result, RedisType::simple_string("OK"));
+    }
 }

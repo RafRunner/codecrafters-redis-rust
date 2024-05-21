@@ -131,7 +131,7 @@ impl RedisCommand {
                 })
             }
             Some("capa") => match data[1].extract_string() {
-                Some("npsync2") => Some(RedisCommand::REPLCONF {
+                Some("psync2") => Some(RedisCommand::REPLCONF {
                     arg: ReplConfArgs::Capabilities,
                 }),
                 _ => None,
@@ -189,7 +189,7 @@ impl RedisWritable for RedisCommand {
                     }
                     ReplConfArgs::Capabilities => {
                         command.push(RedisType::bulk_string("capa"));
-                        command.push(RedisType::bulk_string("npsync2"))
+                        command.push(RedisType::bulk_string("psync2"))
                     }
                 };
 
@@ -361,7 +361,7 @@ mod tests {
         let data = RedisType::list(vec![
             RedisType::bulk_string("replconf"),
             RedisType::bulk_string("capa"),
-            RedisType::bulk_string("npsync2"),
+            RedisType::bulk_string("psync2"),
         ]);
 
         let result = RedisCommand::parse(&data);
