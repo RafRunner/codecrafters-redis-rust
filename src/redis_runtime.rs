@@ -93,6 +93,9 @@ master_repl_offset:{}",
                 },
             },
             RedisCommand::REPLCONF { .. } => todo!(),
+            RedisCommand::PSYNC { .. } => {
+                RedisType::simple_string(&format!("FULLRESYNC {} 0", self.replication_id))
+            }
         }
     }
 
@@ -108,7 +111,7 @@ master_repl_offset:{}",
 
                 response.expect_string("pong", "Unexpected return from ping")?;
 
-                println!("Sending port {}", self.config.port);
+                println!("Sending REPLCONF port {}", self.config.port);
                 let response = client
                     .send_command(&RedisCommand::REPLCONF {
                         arg: ReplConfArgs::Port(self.config.port),
@@ -116,13 +119,40 @@ master_repl_offset:{}",
                     .await?;
                 response.expect_string("ok", "Unexpected return from REPLCONF port")?;
 
-                println!("Sending capabilities");
+                println!("Sending REPLCONF capabilities");
                 let response: RedisType = client
                     .send_command(&RedisCommand::REPLCONF {
                         arg: ReplConfArgs::Capabilities,
                     })
                     .await?;
                 response.expect_string("ok", "Unexpected return from REPLCONF capabilities")?;
+
+                println!("Sending PSYNC");
+                let response: RedisType = client
+                    .send_command(&RedisCommand::PSYNC {
+                        master_id: "?".to_string(),
+                        master_offset: -1,
+                    })
+                    .await?;
+                match response {
+                    RedisType::SimpleString { data } => {
+                        let parts: Vec<&str> = data.split_whitespace().collect();
+                        if parts.len() == 3 && parts[0] == "FULLRESYNC" && parts[2] == "0" {
+                            let repl_id = parts[1].to_string();
+                            println!("Captured REPL_ID: {}", repl_id);
+                            Ok(())
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "Unexpected format from PSYNC. Expected 'FULLRESYNC <REPL_ID> 0', received: {}",
+                                data
+                            ))
+                        }
+                    }
+                    other => Err(anyhow::anyhow!(
+                        "Unexpected return type from PSYNC. Expected simple string, received: {:?}",
+                        other
+                    )),
+                }?;
 
                 Ok(())
             }

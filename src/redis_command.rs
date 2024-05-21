@@ -20,6 +20,10 @@ pub enum RedisCommand {
     REPLCONF {
         arg: ReplConfArgs,
     },
+    PSYNC {
+        master_id: String,
+        master_offset: i64,
+    },
 }
 
 impl RedisCommand {
@@ -38,6 +42,7 @@ impl RedisCommand {
                             "set" => Self::parse_set(rest),
                             "info" => Self::parse_info(rest),
                             "replconf" => Self::parse_replconf(rest),
+                            "psync" => Self::parse_psync(rest),
                             _ => None,
                         },
                         None => None,
@@ -55,19 +60,17 @@ impl RedisCommand {
     }
 
     fn parse_echo(data: &[Box<RedisType>]) -> Option<RedisCommand> {
-        data.get(0).and_then(|argument| {
-            argument
-                .extract_string()
-                .map(|argument| RedisCommand::ECHO(argument.to_string()))
-        })
+        data.get(0)
+            .and_then(|argument| argument.extract_string())
+            .map(|argument| RedisCommand::ECHO(argument.to_string()))
     }
 
     fn parse_get(data: &[Box<RedisType>]) -> Option<RedisCommand> {
-        data.get(0).and_then(|key| {
-            key.extract_string().map(|key| RedisCommand::GET {
+        data.get(0)
+            .and_then(|key| key.extract_string())
+            .map(|key| RedisCommand::GET {
                 key: key.to_string(),
             })
-        })
     }
 
     fn parse_set(data: &[Box<RedisType>]) -> Option<RedisCommand> {
@@ -107,11 +110,11 @@ impl RedisCommand {
     }
 
     fn parse_info(data: &[Box<RedisType>]) -> Option<RedisCommand> {
-        data.get(0).and_then(|arg| {
-            arg.extract_string().map(|arg| RedisCommand::INFO {
+        data.get(0)
+            .and_then(|arg| arg.extract_string())
+            .map(|arg| RedisCommand::INFO {
                 arg: arg.to_string(),
             })
-        })
     }
 
     fn parse_replconf(data: &[Box<RedisType>]) -> Option<RedisCommand> {
@@ -135,6 +138,20 @@ impl RedisCommand {
             },
             _ => None,
         }
+    }
+
+    fn parse_psync(data: &[Box<RedisType>]) -> Option<RedisCommand> {
+        if data.len() != 2 {
+            return None;
+        }
+
+        let master_id = data[0].extract_string()?.to_string();
+        let master_offset = data[1].extract_string()?.parse().ok()?;
+
+        Some(RedisCommand::PSYNC {
+            master_id,
+            master_offset,
+        })
     }
 }
 
@@ -178,6 +195,14 @@ impl RedisWritable for RedisCommand {
 
                 command
             }
+            Self::PSYNC {
+                master_id,
+                master_offset,
+            } => vec![
+                RedisType::bulk_string("PSYNC"),
+                RedisType::bulk_string(master_id),
+                RedisType::bulk_string(&master_offset.to_string()),
+            ],
         };
 
         RedisType::list(parts).write_as_protocol()
@@ -315,5 +340,82 @@ mod tests {
     fn test_empty_list() {
         let empty = RedisType::list(vec![]);
         assert_eq!(RedisCommand::parse(&empty), None);
+    }
+
+    #[test]
+    fn test_parse_replconf() {
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("replconf"),
+            RedisType::bulk_string("listening-port"),
+            RedisType::bulk_string("6379"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(
+            result,
+            Some(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::Port(6379)
+            })
+        );
+
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("replconf"),
+            RedisType::bulk_string("capa"),
+            RedisType::bulk_string("npsync2"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(
+            result,
+            Some(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::Capabilities
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_replconf() {
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("replconf"),
+            RedisType::bulk_string("unknown"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(result, None);
+
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("replconf"),
+            RedisType::bulk_string("listening-port"),
+            RedisType::bulk_string("invalid-port"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_psync() {
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("PSYNC"),
+            RedisType::bulk_string("?"),
+            RedisType::bulk_string("-1"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(
+            result,
+            Some(RedisCommand::PSYNC {
+                master_id: "?".to_string(),
+                master_offset: -1
+            })
+        );
+
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("PSYNC"),
+            RedisType::bulk_string("4324fdsgbfdh235"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(result, None);
     }
 }
