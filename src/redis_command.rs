@@ -60,8 +60,15 @@ impl RedisCommand {
     }
 
     pub fn default_capabilities() -> Self {
-        RedisCommand::REPLCONF {
+        Self::REPLCONF {
             arg: ReplConfArgs::Capabilities(vec!["psync2".to_string()]),
+        }
+    }
+
+    pub fn psync_from_scrath() -> Self {
+        Self::PSYNC {
+            master_id: "?".to_string(),
+            master_offset: -1,
         }
     }
 
@@ -415,13 +422,7 @@ mod tests {
         ]);
 
         let result = RedisCommand::parse(&data);
-        assert_eq!(
-            result,
-            Some(RedisCommand::PSYNC {
-                master_id: "?".to_string(),
-                master_offset: -1
-            })
-        );
+        assert_eq!(result, Some(RedisCommand::psync_from_scrath()));
 
         let data = RedisType::list(vec![
             RedisType::bulk_string("PSYNC"),

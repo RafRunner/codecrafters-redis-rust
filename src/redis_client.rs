@@ -1,8 +1,8 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
-    net::TcpStream,
+    net::TcpStream, time::timeout,
 };
 
 use crate::{redis_command::RedisCommand, redis_type::RedisType, RedisWritable};
@@ -30,11 +30,40 @@ where
 
         let response = RedisType::parse(&mut buf).await?;
         match response {
+            Some(response) => Ok(response),
+            None => Err(anyhow::anyhow!("Server did not respond")),
+        }
+    }
+
+    pub async fn send_command_multiple_response(
+        &mut self,
+        command: &RedisCommand,
+    ) -> Result<RedisType, anyhow::Error> {
+        self.stream.write_all(&command.write_as_protocol()).await?;
+
+        let mut buf = BufReader::new(&mut self.stream);
+
+        let response = RedisType::parse(&mut buf).await?;
+        match response {
             Some(response) => {
                 // We loop to figure if the server responded with more than one value
                 let mut multiple_res = vec![response];
-                while let Some(more_data) = RedisType::parse(&mut buf).await? {
-                    multiple_res.push(more_data);
+                loop {
+                    match timeout(Duration::from_millis(10), RedisType::parse(&mut buf)).await {
+                        Ok(Ok(Some(more_data))) => {
+                            multiple_res.push(more_data);
+                        }
+                        Ok(Ok(None)) => {
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            return Err(anyhow::anyhow!("Error while parsing response: {}", e));
+                        }
+                        Err(_) => {
+                            // Timeout reached, stop reading
+                            break;
+                        }
+                    }
                 }
 
                 Ok(match multiple_res.len() {
@@ -92,11 +121,8 @@ mod tests {
         let mock_stream = MockStream::new(&mut write_data);
         let mut client = RedisClient::new_raw(mock_stream);
 
-        let command = RedisCommand::PSYNC {
-            master_id: "?".to_string(),
-            master_offset: 0,
-        };
-        let result = client.send_command(&command).await;
+        let command = RedisCommand::psync_from_scrath();
+        let result = client.send_command_multiple_response(&command).await;
 
         assert_eq!(write_data, command.write_as_protocol());
 

@@ -98,7 +98,7 @@ master_repl_offset:{}",
                 master_id,
                 master_offset,
             } => {
-                if master_id == "?" && master_offset == 0 {
+                if master_id == "?" && master_offset == -1 {
                     RedisType::multiple(vec![
                         RedisType::simple_string(&format!("FULLRESYNC {} 0", self.replication_id)),
                         RedisType::RDBFile {
@@ -121,7 +121,6 @@ master_repl_offset:{}",
 
                 println!("Sending PING");
                 let response = client.send_command(&RedisCommand::PING).await?;
-
                 response.expect_string("pong", "Unexpected return from ping")?;
 
                 println!("Sending REPLCONF port {}", self.config.port);
@@ -140,10 +139,7 @@ master_repl_offset:{}",
 
                 println!("Sending PSYNC");
                 let response = client
-                    .send_command(&RedisCommand::PSYNC {
-                        master_id: "?".to_string(),
-                        master_offset: -1,
-                    })
+                    .send_command_multiple_response(&RedisCommand::psync_from_scrath())
                     .await?;
                 self.handle_psync(&response)?;
 
@@ -193,7 +189,7 @@ master_repl_offset:{}",
             let file_text = BASE64_STANDARD.encode(file);
             println!("Received file: {}", file_text);
 
-            if &file_text[0..5] == "REDIS" {
+            if String::from_utf8_lossy(&file[..5]) == "REDIS" {
                 Ok(())
             } else {
                 Err(anyhow::anyhow!("File is not an RDB file!"))

@@ -61,7 +61,7 @@ impl RedisType {
                             // It is a RDB file, does not end in CRLF
                             if e.kind() == ErrorKind::UnexpectedEof {
                                 return Ok(Some(Self::RDBFile {
-                                    file: buffer[0..len].to_vec(),
+                                    file: buffer[..len].to_vec(),
                                 }));
                             }
                             Err(e)
