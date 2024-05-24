@@ -30,7 +30,18 @@ where
 
         let response = RedisType::parse(&mut buf).await?;
         match response {
-            Some(response) => Ok(response),
+            Some(response) => {
+                // We loop to figure if the server responded with more than one value
+                let mut multiple_res = vec![response];
+                while let Some(more_data) = RedisType::parse(&mut buf).await? {
+                    multiple_res.push(more_data);
+                }
+
+                Ok(match multiple_res.len() {
+                    1 => multiple_res.remove(0),
+                    _ => RedisType::multiple(multiple_res),
+                })
+            }
             None => Err(anyhow::anyhow!("Server did not respond")),
         }
     }
@@ -44,86 +55,9 @@ impl RedisClient<TcpStream> {
 }
 #[cfg(test)]
 mod tests {
-    use std::{
-        pin::Pin,
-        sync::{Arc, Mutex},
-        task::{Context, Poll},
-    };
-
-    use crate::{redis_runtime::RedisRuntime, server_config::ServerConfig};
+    use crate::{rdb_file, tests::MockStream};
 
     use super::*;
-    use tokio::{
-        io::{self, AsyncRead, AsyncWrite},
-        runtime::Handle,
-    };
-
-    struct MockStream<'a> {
-        read_data: Vec<u8>,
-        write_data: &'a mut Vec<u8>,
-        runtime: Arc<Mutex<RedisRuntime>>,
-    }
-
-    impl<'a> MockStream<'a> {
-        pub fn new(write_data: &'a mut Vec<u8>) -> Self {
-            Self {
-                read_data: Vec::new(),
-                write_data,
-                runtime: Arc::new(Mutex::new(RedisRuntime::new(ServerConfig::default()))),
-            }
-        }
-    }
-
-    impl<'a> AsyncRead for MockStream<'a> {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _: &mut Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            let this = self.get_mut();
-            buf.put_slice(&this.read_data);
-            this.read_data = Vec::new();
-
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    impl<'a> AsyncWrite for MockStream<'a> {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            _: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            let this = self.get_mut();
-            this.write_data.extend_from_slice(buf);
-
-            tokio::task::block_in_place(move || {
-                Handle::current().block_on(async {
-                    let argument = RedisType::parse(&mut BufReader::new(buf))
-                        .await
-                        .unwrap()
-                        .unwrap();
-
-                    // Simulate server processing the command
-                    let command = RedisCommand::parse(&argument).unwrap();
-                    let response = this.runtime.lock().unwrap().execute(command).await;
-
-                    // Prepare response to be read by the client
-                    this.read_data.extend_from_slice(&response.write_as_protocol());
-                })
-            });
-
-            Poll::Ready(Ok(buf.len()))
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_send_command_with_mock_stream() {
@@ -150,5 +84,41 @@ mod tests {
         // Hello mock bulk string was recieved by the client from the stream in RESP
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), RedisType::bulk_string("Hello mock"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_multiple_response() {
+        let mut write_data = Vec::new();
+        let mock_stream = MockStream::new(&mut write_data);
+        let mut client = RedisClient::new_raw(mock_stream);
+
+        let command = RedisCommand::PSYNC {
+            master_id: "?".to_string(),
+            master_offset: 0,
+        };
+        let result = client.send_command(&command).await;
+
+        assert_eq!(write_data, command.write_as_protocol());
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            RedisType::MultipleType { values } => {
+                let mut iter = values.into_iter();
+                assert!(matches!(
+                    *iter.next().unwrap(),
+                    RedisType::SimpleString { .. }
+                ));
+                assert_eq!(
+                    *iter.next().unwrap(),
+                    RedisType::RDBFile {
+                        file: rdb_file::get_empty_rdb_decoded()
+                    }
+                )
+            }
+            other => panic!(
+                "Server should have responded with multiple values. Reponse: {:?}",
+                other
+            ),
+        }
     }
 }

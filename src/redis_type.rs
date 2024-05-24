@@ -12,6 +12,9 @@ pub enum RedisType {
     SimpleString { data: String },
     NullBulkString,
     SimpleError { message: String },
+    RDBFile { file: Vec<u8> },
+    // Similar to the list, but it's not acctually a type
+    MultipleType { values: Vec<Box<RedisType>> },
 }
 
 impl RedisType {
@@ -52,7 +55,19 @@ impl RedisType {
                     let len = len as usize;
 
                     let mut buffer = vec![0; len + 2]; // +2 for CRLF
-                    reader.read_exact(&mut buffer).await?;
+                    match reader.read_exact(&mut buffer).await {
+                        Ok(_) => Ok(()),
+                        Err(e) => {
+                            // It is a RDB file, does not end in CRLF
+                            if e.kind() == ErrorKind::UnexpectedEof {
+                                return Ok(Some(Self::RDBFile {
+                                    file: buffer[0..len].to_vec(),
+                                }));
+                            }
+                            Err(e)
+                        }
+                    }?;
+
                     let data = String::from_utf8(buffer[..len].to_vec())?;
 
                     Self::BulkString { data }
@@ -112,6 +127,12 @@ impl RedisType {
         }
     }
 
+    pub fn multiple(data: Vec<Self>) -> Self {
+        RedisType::MultipleType {
+            values: data.into_iter().map(Box::new).collect(),
+        }
+    }
+
     pub fn simple_error(message: &str) -> Self {
         RedisType::SimpleError {
             message: message.to_string(),
@@ -125,6 +146,15 @@ impl RedisType {
         reader.read_line(&mut line).await?;
 
         Ok(line.trim_end().to_string())
+    }
+
+    fn write_rdb_file(file: &[u8]) -> Vec<u8> {
+        let file_len = &format!("${}\r\n", file.len());
+
+        let mut response = file_len.as_bytes().to_vec();
+        response.extend_from_slice(file);
+
+        response
     }
 }
 
@@ -150,12 +180,19 @@ impl RedisWritable for RedisType {
             RedisType::NullBulkString => b"$-1\r\n".to_vec(),
             RedisType::SimpleString { data } => format!("+{}\r\n", data).as_bytes().to_vec(),
             RedisType::SimpleError { message } => format!("-{}\r\n", message).as_bytes().to_vec(),
+            RedisType::RDBFile { file } => RedisType::write_rdb_file(file),
+            RedisType::MultipleType { values } => values
+                .iter()
+                .flat_map(|val| val.write_as_protocol())
+                .collect(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::rdb_file;
+
     use super::*;
     use std::io::Cursor;
 
@@ -204,5 +241,17 @@ mod tests {
         ]);
 
         assert_type_equals(input, expected).await
+    }
+
+    #[tokio::test]
+    async fn test_parse_rdb_file() {
+        let empty_file = RedisType::write_rdb_file(&rdb_file::get_empty_rdb_decoded());
+        let expected = RedisType::RDBFile {
+            file: rdb_file::get_empty_rdb_decoded(),
+        };
+
+        let parsed = RedisType::parse(&mut BufReader::new(Cursor::new(empty_file))).await;
+
+        assert_eq!(parsed.unwrap().unwrap(), expected);
     }
 }

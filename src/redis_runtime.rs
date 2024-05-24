@@ -1,9 +1,10 @@
+use anyhow::Ok;
+use base64::prelude::*;
+use rand::{distributions::Alphanumeric, Rng};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
 
-use anyhow::Ok;
-use rand::{distributions::Alphanumeric, Rng};
-
 use crate::{
+    rdb_file,
     redis_client::RedisClient,
     redis_command::{RedisCommand, ReplConfArgs},
     redis_type::RedisType,
@@ -93,8 +94,20 @@ master_repl_offset:{}",
                 },
             },
             RedisCommand::REPLCONF { .. } => RedisType::simple_string("OK"),
-            RedisCommand::PSYNC { .. } => {
-                RedisType::simple_string(&format!("FULLRESYNC {} 0", self.replication_id))
+            RedisCommand::PSYNC {
+                master_id,
+                master_offset,
+            } => {
+                if master_id == "?" && master_offset == 0 {
+                    RedisType::multiple(vec![
+                        RedisType::simple_string(&format!("FULLRESYNC {} 0", self.replication_id)),
+                        RedisType::RDBFile {
+                            file: rdb_file::get_empty_rdb_decoded(),
+                        },
+                    ])
+                } else {
+                    RedisType::simple_error("Not capable of syncing with those options")
+                }
             }
         }
     }
@@ -120,40 +133,76 @@ master_repl_offset:{}",
                 response.expect_string("ok", "Unexpected return from REPLCONF port")?;
 
                 println!("Sending REPLCONF capabilities");
-                let response: RedisType = client
+                let response = client
                     .send_command(&RedisCommand::default_capabilities())
                     .await?;
                 response.expect_string("ok", "Unexpected return from REPLCONF capabilities")?;
 
                 println!("Sending PSYNC");
-                let response: RedisType = client
+                let response = client
                     .send_command(&RedisCommand::PSYNC {
                         master_id: "?".to_string(),
                         master_offset: -1,
                     })
                     .await?;
-                match response {
-                    RedisType::SimpleString { data } => {
-                        let parts: Vec<&str> = data.split_whitespace().collect();
-                        if parts.len() == 3 && parts[0] == "FULLRESYNC" && parts[2] == "0" {
-                            let repl_id = parts[1].to_string();
-                            println!("Captured REPL_ID: {}", repl_id);
-                            Ok(())
-                        } else {
-                            Err(anyhow::anyhow!(
-                                "Unexpected format from PSYNC. Expected 'FULLRESYNC <REPL_ID> 0', received: {}",
-                                data
-                            ))
-                        }
-                    }
-                    other => Err(anyhow::anyhow!(
-                        "Unexpected return type from PSYNC. Expected simple string, received: {:?}",
-                        other
-                    )),
-                }?;
+                self.handle_psync(&response)?;
 
                 Ok(())
             }
+        }
+    }
+
+    fn handle_psync(&self, response: &RedisType) -> Result<(), anyhow::Error> {
+        let (repl_id, file_opt) = match response {
+            RedisType::MultipleType { values } => {
+                if let RedisType::SimpleString { data } = values[0].as_ref() {
+                    self.parse_fullresync(data)
+                } else {
+                    return Err(anyhow::anyhow!("Expected a SimpleString for FULLRESYNC, found: {:?}", values[0]));
+                }
+                .map(|repl_id| (repl_id, values.get(1)))
+            }
+            RedisType::SimpleString { data } => self.parse_fullresync(data).map(|repl_id| (repl_id, None)),
+            other => return Err(anyhow::anyhow!("Unexpected return type from PSYNC. Expected multiple responses or a simple string, received: {:?}", other)),
+        }?;
+
+        println!("Captured REPL_ID: {}", repl_id);
+
+        if let Some(file) = file_opt {
+            self.handle_rdb_file(file.as_ref())?;
+        }
+
+        Ok(())
+    }
+
+    fn parse_fullresync(&self, data: &str) -> Result<String, anyhow::Error> {
+        let parts: Vec<&str> = data.split_whitespace().collect();
+        if parts.len() == 3 && parts[0] == "FULLRESYNC" && parts[2] == "0" {
+            let repl_id = parts[1].to_string();
+            Ok(repl_id)
+        } else {
+            Err(anyhow::anyhow!(
+                "Unexpected format from PSYNC. Expected 'FULLRESYNC <REPL_ID> 0', received: {}",
+                data
+            ))
+        }
+    }
+
+    fn handle_rdb_file(&self, response: &RedisType) -> Result<(), anyhow::Error> {
+        if let RedisType::RDBFile { file } = response {
+            let file_text = BASE64_STANDARD.encode(file);
+            println!("Received file: {}", file_text);
+
+            if &file_text[0..5] == "REDIS" {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("File is not an RDB file!"))
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "Unexpected type for RDB file. Expected a RDB file, received: {:?}",
+                response
+            ))
         }
     }
 }
