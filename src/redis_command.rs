@@ -59,6 +59,12 @@ impl RedisCommand {
         }
     }
 
+    pub fn default_capabilities() -> Self {
+        RedisCommand::REPLCONF {
+            arg: ReplConfArgs::Capabilities(vec!["psync2".to_string()]),
+        }
+    }
+
     fn parse_echo(data: &[Box<RedisType>]) -> Option<RedisCommand> {
         data.get(0)
             .and_then(|argument| argument.extract_string())
@@ -130,12 +136,17 @@ impl RedisCommand {
                     arg: ReplConfArgs::Port(port),
                 })
             }
-            Some("capa") => match data[1].extract_string() {
-                Some("psync2") => Some(RedisCommand::REPLCONF {
-                    arg: ReplConfArgs::Capabilities,
-                }),
-                _ => None,
-            },
+            Some("capa") => {
+                let mut caps = Vec::new();
+                for element in data[1..].iter() {
+                    let cap = element.extract_string()?;
+                    caps.push(cap.to_string());
+                }
+
+                Some(RedisCommand::REPLCONF {
+                    arg: ReplConfArgs::Capabilities(caps),
+                })
+            }
             _ => None,
         }
     }
@@ -187,9 +198,11 @@ impl RedisWritable for RedisCommand {
                         command.push(RedisType::bulk_string("listening-port"));
                         command.push(RedisType::bulk_string(&port.to_string()))
                     }
-                    ReplConfArgs::Capabilities => {
+                    ReplConfArgs::Capabilities(caps) => {
                         command.push(RedisType::bulk_string("capa"));
-                        command.push(RedisType::bulk_string("psync2"))
+                        for cap in caps {
+                            command.push(RedisType::bulk_string(cap))
+                        }
                     }
                 };
 
@@ -212,7 +225,7 @@ impl RedisWritable for RedisCommand {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReplConfArgs {
     Port(u16),
-    Capabilities,
+    Capabilities(Vec<String>),
 }
 
 #[cfg(test)]
@@ -368,7 +381,7 @@ mod tests {
         assert_eq!(
             result,
             Some(RedisCommand::REPLCONF {
-                arg: ReplConfArgs::Capabilities
+                arg: ReplConfArgs::Capabilities(vec!["psync2".to_string()])
             })
         );
     }

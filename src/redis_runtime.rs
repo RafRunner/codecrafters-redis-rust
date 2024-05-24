@@ -121,9 +121,7 @@ master_repl_offset:{}",
 
                 println!("Sending REPLCONF capabilities");
                 let response: RedisType = client
-                    .send_command(&RedisCommand::REPLCONF {
-                        arg: ReplConfArgs::Capabilities,
-                    })
+                    .send_command(&RedisCommand::default_capabilities())
                     .await?;
                 response.expect_string("ok", "Unexpected return from REPLCONF capabilities")?;
 
@@ -345,12 +343,16 @@ mod tests {
         let runtime = RedisRuntime::default();
 
         let result = runtime
-            .execute(RedisCommand::REPLCONF { arg: ReplConfArgs::Port(1234) })
+            .execute(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::Port(1234),
+            })
             .await;
         assert_eq!(result, RedisType::simple_string("OK"));
 
         let result = runtime
-            .execute(RedisCommand::REPLCONF { arg: ReplConfArgs::Capabilities })
+            .execute(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::Capabilities(vec!["psync2".to_string()]),
+            })
             .await;
         assert_eq!(result, RedisType::simple_string("OK"));
     }
