@@ -47,6 +47,12 @@ async fn main() {
     }
 }
 
+#[derive(Debug)]
+enum CommandOrError {
+    Command(RedisCommand),
+    Error(anyhow::Error),
+}
+
 fn handle_connection(stream: TcpStream, runtime: Arc<RedisRuntime>, from_master: bool) {
     let (read_half, write_half) = split(stream);
     let (tx, rx) = mpsc::channel(32);
@@ -63,7 +69,7 @@ fn handle_connection(stream: TcpStream, runtime: Arc<RedisRuntime>, from_master:
     ));
 }
 
-async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<RedisCommand>) {
+async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<CommandOrError>) {
     let mut buf = BufReader::new(read_half);
 
     loop {
@@ -75,58 +81,82 @@ async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<RedisCo
 
                 match RedisCommand::parse(&input) {
                     Some(command) => {
-                        if let Err(e) = tx.send(command).await {
-                            println!("Error sending command to processor. {}", e);
-                            break;
-                        }
+                        tx.send(CommandOrError::Command(command)).await.unwrap();
                     }
                     None => {
-                        println!("No response built");
-                        // let err = RedisType::simple_error("Unrecognized command");
-                        // buf.lock().await.write_all(&err.write_as_protocol()).await?;
+                        tx.send(CommandOrError::Error(anyhow::anyhow!(
+                            "Not a valid command: {:?}",
+                            input
+                        )))
+                        .await
+                        .unwrap();
                     }
                 }
             }
             Ok(None) => break,
             Err(err) => {
-                println!("Error parsing input type: {:?}", &err);
-                // let err = RedisType::simple_error(&err.to_string());
-                // buf.lock().await.write_all(&err.write_as_protocol()).await?;
+                tx.send(CommandOrError::Error(anyhow::anyhow!(
+                    "Error parsing input type: {:?}",
+                    &err
+                )))
+                .await
+                .unwrap();
             }
         }
     }
 }
 
 async fn handle_processing_writing(
-    mut rx: mpsc::Receiver<RedisCommand>,
+    mut rx: mpsc::Receiver<CommandOrError>,
     write_half: WriteHalf<TcpStream>,
     runtime: Arc<RedisRuntime>,
     from_master: bool,
 ) -> Result<(), anyhow::Error> {
     let write_half = Arc::new(Mutex::new(write_half));
 
-    while let Some(command) = rx.recv().await {
-        let write_clone = Arc::clone(&write_half);
-        println!("Executing command: {:?}", command);
+    while let Some(command_or_error) = rx.recv().await {
+        match command_or_error {
+            CommandOrError::Command(command) => {
+                let write_clone = Arc::clone(&write_half);
 
-        if !runtime.is_master() && command.is_write_command() && !from_master {
-            let error = RedisType::simple_error("You can't write against a read only replica.");
+                if !runtime.is_master() && command.is_write_command() && !from_master {
+                    let error_msg = "You can't write against a read only replica.";
+                    println!("{}", error_msg);
+                    let error = RedisType::simple_error(error_msg);
 
-            let mut write_guard = write_half.lock().await;
-            write_guard.write_all(&error.write_as_protocol()).await?;
-            continue;
-        }
+                    write_half
+                        .lock()
+                        .await
+                        .write_all(&error.write_as_protocol())
+                        .await?;
+                    continue;
+                }
 
-        let result = runtime.execute(&command, Some(write_clone)).await;
-        println!("Command result: {:?}", result);
+                println!("Executing command: {:?}", command);
+                let result = runtime.execute(&command, Some(write_clone)).await;
+                println!("Command result: {:?}", result);
 
-        if runtime.is_master() || !command.is_write_command() {
-            let mut write_guard = write_half.lock().await;
-            write_guard.write_all(&result.write_as_protocol()).await?;
-        }
+                if runtime.is_master() || !command.is_write_command() {
+                    write_half
+                        .lock()
+                        .await
+                        .write_all(&result.write_as_protocol())
+                        .await?;
+                }
 
-        if let Err(e) = runtime.replicate_command(&command).await {
-            println!("Error replicating command: {}", e);
+                if let Err(e) = runtime.replicate_command(&command).await {
+                    println!("Error replicating command: {}", e);
+                }
+            }
+            CommandOrError::Error(error) => {
+                println!("Recieved error from channel: {}. Sending error back", error);
+                let error = RedisType::simple_error(&error.to_string());
+                write_half
+                    .lock()
+                    .await
+                    .write_all(&error.write_as_protocol())
+                    .await?;
+            }
         }
     }
 
