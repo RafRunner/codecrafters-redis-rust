@@ -1,3 +1,4 @@
+use anyhow::Ok;
 use base64::prelude::*;
 use rand::{distributions::Alphanumeric, Rng};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
@@ -181,6 +182,10 @@ master_repl_offset:{}",
     }
 
     pub async fn replicate_command(&self, command: &RedisCommand) -> anyhow::Result<()> {
+        if !command.is_write_command() {
+            return Ok(());
+        }
+
         if let ReplicationRole::Master { replicas } = &self.replication_role {
             for replica in replicas.lock().await.iter() {
                 let mut writer = replica.client.lock().await;
