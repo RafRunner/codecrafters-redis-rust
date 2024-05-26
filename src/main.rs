@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::io::{split, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 #[tokio::main]
 async fn main() {
@@ -20,28 +21,43 @@ async fn main() {
     println!("Listening on port {}", config.port);
 
     let runtime = Arc::new(RedisRuntime::new(config));
-    runtime
+    let master_conn = runtime
         .perform_handshake()
         .await
         .expect("Error during handshake");
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                println!("Accepted new connection");
-                let runtime_clone = Arc::clone(&runtime);
-                let (read_half, write_half) = split(stream);
-                let (tx, rx) = mpsc::channel(32);
-
-                // Spawn task to handle reading
-                tokio::spawn(handle_reading(read_half, tx));
-
-                // Spawn task to handle processing and writing
-                tokio::spawn(handle_processing_writing(rx, write_half, runtime_clone));
-            }
-            Err(e) => println!("Error accepting connection: {}", e),
+    match master_conn {
+        Some(stream) => {
+            let (read_handle, write_handle) = handle_connection(stream, runtime);
+            let _ = tokio::join!(read_handle, write_handle);
         }
-    }
+        None => loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    println!("Accepted new connection");
+                    let runtime_clone = Arc::clone(&runtime);
+                    handle_connection(stream, runtime_clone);
+                }
+                Err(e) => println!("Error accepting connection: {}", e),
+            }
+        },
+    };
+}
+
+fn handle_connection(
+    stream: TcpStream,
+    runtime: Arc<RedisRuntime>,
+) -> (JoinHandle<()>, JoinHandle<anyhow::Result<()>>) {
+    let (read_half, write_half) = split(stream);
+    let (tx, rx) = mpsc::channel(32);
+
+    // Spawn task to handle reading
+    let read_handle = tokio::spawn(handle_reading(read_half, tx));
+
+    // Spawn task to handle processing and writing
+    let write_handle = tokio::spawn(handle_processing_writing(rx, write_half, runtime));
+
+    (read_handle, write_handle)
 }
 
 async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<RedisCommand>) {
@@ -91,15 +107,14 @@ async fn handle_processing_writing(
         let result = runtime.execute(&command, Some(write_clone)).await;
         println!("Command result: {:?}", result);
 
-        write_half
-            .lock()
-            .await
-            .write_all(&result.write_as_protocol())
-            .await?;
+        if runtime.is_master() {
+            let mut write_guard = write_half.lock().await;
+            write_guard.write_all(&result.write_as_protocol()).await?;
 
-        if command.is_write_command() {
-            if let Err(e) = runtime.replicate_command(&command).await {
-                println!("Error replicating command: {}", e);
+            if command.is_write_command() {
+                if let Err(e) = runtime.replicate_command(&command).await {
+                    println!("Error replicating command: {}", e);
+                }
             }
         }
     }

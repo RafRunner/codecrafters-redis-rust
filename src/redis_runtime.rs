@@ -143,9 +143,9 @@ master_repl_offset:{}",
         }
     }
 
-    pub async fn perform_handshake(&self) -> Result<(), anyhow::Error> {
+    pub async fn perform_handshake(&self) -> Result<Option<TcpStream>, anyhow::Error> {
         match self.replication_role {
-            ReplicationRole::Master { .. } => Ok(()), // Do nothing
+            ReplicationRole::Master { .. } => Ok(None), // Do nothing
             ReplicationRole::Slave { replicaof } => {
                 println!("Starting handshake");
                 let mut client = RedisClient::new(replicaof).await?;
@@ -174,7 +174,8 @@ master_repl_offset:{}",
                     .await?;
                 self.handle_psync(&response, &mut client).await?;
 
-                Ok(())
+                println!("Handshake successful. Ready to receive commands");
+                Ok(Some(client.buffer.into_inner()))
             }
         }
     }
@@ -191,6 +192,10 @@ master_repl_offset:{}",
         }
 
         Ok(())
+    }
+
+    pub fn is_master(&self) -> bool {
+        matches!(self.replication_role, ReplicationRole::Master { .. })
     }
 
     async fn handle_psync(
