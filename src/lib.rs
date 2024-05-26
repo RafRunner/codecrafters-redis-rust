@@ -74,7 +74,7 @@ pub mod tests {
 
                     // Simulate server processing the command
                     let command = RedisCommand::parse(&argument).unwrap();
-                    let response = this.runtime.lock().unwrap().execute(command).await;
+                    let response = this.runtime.lock().unwrap().execute_no_conn(&command).await;
 
                     // Prepare response to be read by the client
                     this.read_data

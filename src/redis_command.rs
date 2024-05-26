@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{redis_type::RedisType, RedisWritable};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum RedisCommand {
     PING,
     ECHO(String),
@@ -69,6 +69,13 @@ impl RedisCommand {
         Self::PSYNC {
             master_id: "?".to_string(),
             master_offset: -1,
+        }
+    }
+
+    pub fn is_write_command(&self) -> bool {
+        match self {
+            RedisCommand::SET { .. } => true,
+            _ => false,
         }
     }
 
@@ -229,7 +236,7 @@ impl RedisWritable for RedisCommand {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ReplConfArgs {
     Port(u16),
     Capabilities(Vec<String>),
