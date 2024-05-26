@@ -1,3 +1,4 @@
+// use redis_starter_rust::redis_client::RedisClient;
 use redis_starter_rust::redis_command::RedisCommand;
 use redis_starter_rust::redis_runtime::RedisRuntime;
 use redis_starter_rust::redis_type::RedisType;
@@ -108,7 +109,7 @@ async fn handle_processing_writing(
         let write_clone = Arc::clone(&write_half);
         println!("Executing command: {:?}", command);
 
-        if command.is_write_command() && !from_master {
+        if !runtime.is_master() && command.is_write_command() && !from_master {
             let error = RedisType::simple_error("You can't write against a read only replica.");
 
             let mut write_guard = write_half.lock().await;
