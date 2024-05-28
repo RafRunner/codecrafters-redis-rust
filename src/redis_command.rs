@@ -161,6 +161,20 @@ impl RedisCommand {
                     arg: ReplConfArgs::Capabilities(caps),
                 })
             }
+            Some("GETACK") => {
+                let arg = data[1].extract_string()?.to_string();
+
+                Some(RedisCommand::REPLCONF {
+                    arg: ReplConfArgs::GetAck(arg),
+                })
+            }
+            Some("ACK") => {
+                let offset: i64 = data[1].extract_string().and_then(|raw| raw.parse().ok())?;
+
+                Some(RedisCommand::REPLCONF {
+                    arg: ReplConfArgs::Ack(offset),
+                })
+            }
             _ => None,
         }
     }
@@ -218,6 +232,14 @@ impl RedisWritable for RedisCommand {
                             command.push(RedisType::bulk_string(cap))
                         }
                     }
+                    ReplConfArgs::GetAck(arg) => {
+                        command.push(RedisType::bulk_string("GETACK"));
+                        command.push(RedisType::bulk_string(arg))
+                    }
+                    ReplConfArgs::Ack(offset) => {
+                        command.push(RedisType::bulk_string("ACK"));
+                        command.push(RedisType::bulk_string(&offset.to_string()))
+                    }
                 };
 
                 command
@@ -240,6 +262,8 @@ impl RedisWritable for RedisCommand {
 pub enum ReplConfArgs {
     Port(u16),
     Capabilities(Vec<String>),
+    GetAck(String),
+    Ack(i64),
 }
 
 #[cfg(test)]
@@ -370,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_replconf() {
+    fn test_parse_replconf_port() {
         let data = RedisType::list(vec![
             RedisType::bulk_string("replconf"),
             RedisType::bulk_string("listening-port"),
@@ -384,7 +408,10 @@ mod tests {
                 arg: ReplConfArgs::Port(6379)
             })
         );
+    }
 
+    #[test]
+    fn test_parse_replconf_capa() {
         let data = RedisType::list(vec![
             RedisType::bulk_string("replconf"),
             RedisType::bulk_string("capa"),
@@ -396,6 +423,40 @@ mod tests {
             result,
             Some(RedisCommand::REPLCONF {
                 arg: ReplConfArgs::Capabilities(vec!["psync2".to_string()])
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_replconf_getack() {
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("REPLCONF"),
+            RedisType::bulk_string("GETACK"),
+            RedisType::bulk_string("*"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(
+            result,
+            Some(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::GetAck("*".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_replconf_ack() {
+        let data = RedisType::list(vec![
+            RedisType::bulk_string("REPLCONF"),
+            RedisType::bulk_string("ACK"),
+            RedisType::bulk_string("*"),
+        ]);
+
+        let result = RedisCommand::parse(&data);
+        assert_eq!(
+            result,
+            Some(RedisCommand::REPLCONF {
+                arg: ReplConfArgs::GetAck("*".to_string())
             })
         );
     }

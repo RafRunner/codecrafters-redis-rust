@@ -113,27 +113,34 @@ master_repl_offset:{}",
                     message: format!("Unknown arg for INFO: {}", unknown),
                 },
             },
-            RedisCommand::REPLCONF { arg } => {
-                match &arg {
-                    ReplConfArgs::Port(port) => match &self.replication_role {
-                        ReplicationRole::Master { replicas } => {
-                            if let Some((peer_ip, connection)) = connection {
-                                println!("Adding new replica at {}:{}", peer_ip, port);
+            RedisCommand::REPLCONF { arg } => match &arg {
+                ReplConfArgs::Port(port) => match &self.replication_role {
+                    ReplicationRole::Master { replicas } => {
+                        if let Some((peer_ip, connection)) = connection {
+                            println!("Adding new replica at {}:{}", peer_ip, port);
 
-                                replicas
-                                    .lock()
-                                    .await
-                                    .push(Replica::new(connection, SocketAddr::new(peer_ip, *port)))
-                            }
+                            replicas
+                                .lock()
+                                .await
+                                .push(Replica::new(connection, SocketAddr::new(peer_ip, *port)));
                         }
-                        ReplicationRole::Slave { .. } => {
-                            return RedisType::simple_error("You can't sync with a replica")
-                        }
-                    },
-                    ReplConfArgs::Capabilities(_) => (),
-                };
-                RedisType::simple_string("OK")
-            }
+
+                        RedisType::simple_string("OK")
+                    }
+                    ReplicationRole::Slave { .. } => {
+                        RedisType::simple_error("You can't sync with a replica")
+                    }
+                },
+                ReplConfArgs::Capabilities(_) => RedisType::simple_string("OK"),
+                ReplConfArgs::GetAck(_) => {
+                    if self.is_master() {
+                        RedisType::simple_error("You can't send GETACK to a master")
+                    } else {
+                        RedisType::ack(0)
+                    }
+                }
+                ReplConfArgs::Ack(_) => RedisType::simple_string("OK"),
+            },
             RedisCommand::PSYNC {
                 master_id,
                 master_offset,

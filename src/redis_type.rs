@@ -128,6 +128,14 @@ impl RedisType {
         }
     }
 
+    pub fn ack(offset: i64) -> Self {
+        RedisType::list(vec![
+            RedisType::bulk_string("REPLCONF"),
+            RedisType::bulk_string("ACK"),
+            RedisType::bulk_string(&offset.to_string()),
+        ])
+    }
+
     async fn read_line(
         reader: &mut BufReader<impl AsyncRead + Unpin>,
     ) -> Result<String, anyhow::Error> {
