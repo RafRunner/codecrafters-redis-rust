@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
 
@@ -37,6 +37,26 @@ where
         response.ok_or(anyhow::anyhow!(
             "Server did not provide aditional information"
         ))
+    }
+
+    pub async fn accept_rdb_file(&mut self) -> anyhow::Result<RedisType> {
+        let first_byte = self.buffer.read_u8().await?;
+
+        if !first_byte == b'$' {
+            Err(anyhow::anyhow!(
+                "Expected first byte of RDB encoding to be '$'"
+            ))
+        } else {
+            let mut line = String::new();
+            self.buffer.read_line(&mut line).await?;
+
+            let len: usize = line.trim().parse()?;
+
+            let mut buffer = vec![0; len]; // no CRLF
+            self.buffer.read_exact(&mut buffer).await?;
+
+            Ok(RedisType::RDBFile { file: buffer })
+        }
     }
 }
 
@@ -89,7 +109,7 @@ mod tests {
         let result = client.send_command(&command).await;
 
         assert!(matches!(result, Ok(RedisType::SimpleString { .. })));
-        let next_result = client.accept_adicional_data().await;
+        let next_result = client.accept_rdb_file().await;
         assert!(matches!(next_result, Ok(_)));
         assert_eq!(
             next_result.unwrap(),

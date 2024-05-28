@@ -54,37 +54,12 @@ impl RedisType {
                 } else {
                     let len = len as usize;
 
-                    // can be a RDB file
-                    if len >= 5 {
-                        let mut first_5_bytes = vec![0; 5];
-                        reader.read_exact(&mut first_5_bytes).await?;
+                    let mut buffer = vec![0; len + 2]; // +2 for CRLF
+                    reader.read_exact(&mut buffer).await?;
 
-                        if first_5_bytes == b"REDIS" {
-                            let mut buffer = vec![0; len - 5]; // no CRLF
-                            reader.read_exact(&mut buffer).await?;
+                    let data = String::from_utf8(buffer[..len].to_vec())?;
 
-                            first_5_bytes.extend_from_slice(&buffer);
-
-                            Self::RDBFile {
-                                file: first_5_bytes,
-                            }
-                        } else {
-                            let mut buffer = vec![0; len - 3]; // account for CRLF
-                            reader.read_exact(&mut buffer).await?;
-
-                            first_5_bytes.extend_from_slice(&buffer);
-                            let data = String::from_utf8(first_5_bytes[..len].to_vec())?;
-
-                            Self::BulkString { data }
-                        }
-                    } else {
-                        let mut buffer = vec![0; len + 2]; // +2 for CRLF
-                        reader.read_exact(&mut buffer).await?;
-
-                        let data = String::from_utf8(buffer[..len].to_vec())?;
-
-                        Self::BulkString { data }
-                    }
+                    Self::BulkString { data }
                 }
             }
             '+' => {

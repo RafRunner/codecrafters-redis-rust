@@ -148,7 +148,7 @@ master_repl_offset:{}",
         match self.replication_role {
             ReplicationRole::Master { .. } => Ok(None), // Do nothing
             ReplicationRole::Slave { replicaof } => {
-                println!("Starting handshake");
+                println!("Starting handshake with {}", replicaof);
                 let mut client = RedisClient::new(replicaof).await?;
 
                 println!("Sending PING");
@@ -220,7 +220,7 @@ master_repl_offset:{}",
 
         println!("Captured REPL_ID: {}", repl_id);
 
-        let file = client.accept_adicional_data().await?;
+        let file = client.accept_rdb_file().await?;
         self.handle_rdb_file(&file)?;
 
         Ok(())

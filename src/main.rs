@@ -4,12 +4,15 @@ use redis_starter_rust::redis_runtime::RedisRuntime;
 use redis_starter_rust::redis_type::RedisType;
 use redis_starter_rust::server_config::ServerConfig;
 use redis_starter_rust::RedisWritable;
+use std::cmp::min;
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{split, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
 
 #[tokio::main]
 async fn main() {
@@ -25,15 +28,8 @@ async fn main() {
     println!("Listening on port {}", config.port);
 
     let runtime = Arc::new(RedisRuntime::new(config));
-    let master_conn = runtime
-        .perform_handshake()
-        .await
-        .expect("Error during handshake");
-
-    if let Some(stream) = master_conn {
-        let runtime_clone = Arc::clone(&runtime);
-        handle_connection(stream, runtime_clone, true);
-    }
+    let runtime_clone = Arc::clone(&runtime);
+    tokio::spawn(set_up_replica_loop(runtime_clone));
 
     loop {
         match listener.accept().await {
@@ -47,26 +43,60 @@ async fn main() {
     }
 }
 
+async fn set_up_replica_loop(runtime: Arc<RedisRuntime>) {
+    let mut backoff = Duration::from_secs(1);
+
+    loop {
+        match runtime.perform_handshake().await {
+            Ok(Some(stream)) => {
+                println!("Setting up connection handlers as a replica.");
+                backoff = Duration::from_secs(1);
+
+                let runtime_clone = Arc::clone(&runtime);
+                let (read_handle, write_handle) = handle_connection(stream, runtime_clone, true);
+
+                // Join the read and write tasks. If either fails, we try to reconnect.
+                let _ = tokio::join!(read_handle, write_handle);
+                println!("Connection to master lost. Reconnecting in {:?}", backoff);
+            }
+            Ok(None) => break, // Exit the loop since the instance is a master.
+            Err(e) => {
+                println!("Error during handshake: {e}. Retrying in {:?}", backoff);
+            }
+        }
+
+        // If the instance is a replica and lost connection, or couldn't connect, retry with backoff
+        tokio::time::sleep(backoff).await;
+        backoff = min(backoff * 2, Duration::from_secs(30)); // Exponential backoff capped at 30 seconds
+    }
+}
+
 #[derive(Debug)]
 enum CommandOrError {
     Command(RedisCommand),
     Error(anyhow::Error),
 }
 
-fn handle_connection(stream: TcpStream, runtime: Arc<RedisRuntime>, from_master: bool) {
+fn handle_connection(
+    stream: TcpStream,
+    runtime: Arc<RedisRuntime>,
+    from_master: bool,
+) -> (JoinHandle<()>, JoinHandle<anyhow::Result<()>>) {
     let (read_half, write_half) = split(stream);
     let (tx, rx) = mpsc::channel(32);
 
     // Spawn task to handle reading
-    tokio::spawn(handle_reading(read_half, tx));
+    let read_handle = tokio::spawn(handle_reading(read_half, tx));
 
     // Spawn task to handle processing and writing
-    tokio::spawn(handle_processing_writing(
+    let write_handle = tokio::spawn(handle_processing_writing(
         rx,
         write_half,
         runtime,
         from_master,
     ));
+
+    (read_handle, write_handle)
 }
 
 async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<CommandOrError>) {
