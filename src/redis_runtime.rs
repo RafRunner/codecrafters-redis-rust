@@ -1,7 +1,12 @@
 use anyhow::Ok;
 use base64::prelude::*;
 use rand::{distributions::Alphanumeric, Rng};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Instant,
+};
 use tokio::{
     io::{AsyncWriteExt, WriteHalf},
     net::TcpStream,
@@ -54,7 +59,7 @@ impl RedisRuntime {
     pub async fn execute(
         &self,
         command: &RedisCommand,
-        connection: Option<Arc<Mutex<WriteHalf<TcpStream>>>>,
+        connection: Option<(IpAddr, Arc<Mutex<WriteHalf<TcpStream>>>)>,
     ) -> RedisType {
         match command {
             RedisCommand::PING => RedisType::SimpleString {
@@ -112,14 +117,17 @@ master_repl_offset:{}",
                 match &arg {
                     ReplConfArgs::Port(port) => match &self.replication_role {
                         ReplicationRole::Master { replicas } => {
-                            if let Some(connection) = connection {
-                                println!("Adding new replica at port {}", port);
+                            if let Some((peer_ip, connection)) = connection {
+                                println!("Adding new replica at {}:{}", peer_ip, port);
 
-                                replicas.lock().await.push(Replica::new(connection))
+                                replicas
+                                    .lock()
+                                    .await
+                                    .push(Replica::new(connection, SocketAddr::new(peer_ip, *port)))
                             }
                         }
                         ReplicationRole::Slave { .. } => {
-                            return RedisType::simple_error("You can't sync with a slave")
+                            return RedisType::simple_error("You can't sync with a replica")
                         }
                     },
                     ReplConfArgs::Capabilities(_) => (),
@@ -188,10 +196,14 @@ master_repl_offset:{}",
 
         if let ReplicationRole::Master { replicas } = &self.replication_role {
             for replica in replicas.lock().await.iter() {
-                let mut writer = replica.client.lock().await;
-                println!("Replicating command {:?}", command);
+                let mut writer = replica.connection.lock().await;
+                println!("Replicating command {:?} to {}", command, replica.addr);
+
                 if let Err(e) = writer.write_all(&command.write_as_protocol()).await {
-                    println!("Error replicating command {:?}. {}", command, e);
+                    println!(
+                        "Error replicating command {:?} to {}. {}",
+                        command, replica.addr, e
+                    );
                 }
             }
         }
@@ -266,12 +278,16 @@ impl Default for RedisRuntime {
 
 #[derive(Debug)]
 struct Replica {
-    client: Arc<Mutex<WriteHalf<TcpStream>>>,
+    connection: Arc<Mutex<WriteHalf<TcpStream>>>,
+    addr: SocketAddr,
 }
 
 impl Replica {
-    fn new(client: Arc<Mutex<WriteHalf<TcpStream>>>) -> Self {
-        Self { client }
+    fn new(client: Arc<Mutex<WriteHalf<TcpStream>>>, addr: SocketAddr) -> Self {
+        Self {
+            connection: client,
+            addr,
+        }
     }
 }
 

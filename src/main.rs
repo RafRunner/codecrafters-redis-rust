@@ -36,7 +36,7 @@ async fn main() {
             Ok((stream, _)) => {
                 println!("Accepted new connection");
                 let runtime_clone = Arc::clone(&runtime);
-                handle_connection(stream, runtime_clone, false);
+                let _ = handle_connection(stream, runtime_clone, false);
             }
             Err(e) => println!("Error accepting connection: {}", e),
         }
@@ -53,19 +53,22 @@ async fn set_up_replica_loop(runtime: Arc<RedisRuntime>) {
                 backoff = Duration::from_secs(1);
 
                 let runtime_clone = Arc::clone(&runtime);
-                let (read_handle, write_handle) = handle_connection(stream, runtime_clone, true);
-
-                // Join the read and write tasks. If either fails, we try to reconnect.
-                let _ = tokio::join!(read_handle, write_handle);
-                println!("Connection to master lost. Reconnecting in {:?}", backoff);
+                if let Ok((read_handle, write_handle)) =
+                    handle_connection(stream, runtime_clone, true)
+                {
+                    // Join the read and write tasks. If either fails, we try to reconnect.
+                    let _ = tokio::join!(read_handle, write_handle);
+                    println!("Connection to master lost. Reconnecting in {:?}", backoff);
+                }
             }
             Ok(None) => break, // Exit the loop since the instance is a master.
             Err(e) => {
-                println!("Error during handshake: {e}. Retrying in {:?}", backoff);
+                println!("Error during handshake: {e}");
             }
         }
 
         // If the instance is a replica and lost connection, or couldn't connect, retry with backoff
+        println!("Retrying in {:?}", backoff);
         tokio::time::sleep(backoff).await;
         backoff = min(backoff * 2, Duration::from_secs(30)); // Exponential backoff capped at 30 seconds
     }
@@ -81,7 +84,8 @@ fn handle_connection(
     stream: TcpStream,
     runtime: Arc<RedisRuntime>,
     from_master: bool,
-) -> (JoinHandle<()>, JoinHandle<anyhow::Result<()>>) {
+) -> anyhow::Result<(JoinHandle<()>, JoinHandle<anyhow::Result<()>>)> {
+    let peer_ip = stream.peer_addr()?.ip();
     let (read_half, write_half) = split(stream);
     let (tx, rx) = mpsc::channel(32);
 
@@ -94,9 +98,10 @@ fn handle_connection(
         write_half,
         runtime,
         from_master,
+        peer_ip,
     ));
 
-    (read_handle, write_handle)
+    Ok((read_handle, write_handle))
 }
 
 async fn handle_reading(read_half: ReadHalf<TcpStream>, tx: mpsc::Sender<CommandOrError>) {
@@ -141,6 +146,7 @@ async fn handle_processing_writing(
     write_half: WriteHalf<TcpStream>,
     runtime: Arc<RedisRuntime>,
     from_master: bool,
+    peer_ip: IpAddr,
 ) -> Result<(), anyhow::Error> {
     let write_half = Arc::new(Mutex::new(write_half));
 
@@ -163,7 +169,9 @@ async fn handle_processing_writing(
                 }
 
                 println!("Executing command: {:?}", command);
-                let result = runtime.execute(&command, Some(write_clone)).await;
+                let result = runtime
+                    .execute(&command, Some((peer_ip, write_clone)))
+                    .await;
                 println!("Command result: {:?}", result);
 
                 if runtime.is_master() || !command.is_write_command() {
